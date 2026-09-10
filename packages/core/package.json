@@ -1,0 +1,28 @@
+{
+  "name": "@kairou/core",
+  "version": "0.0.1",
+  "license": "MIT",
+  "files": [
+    "lib"
+  ],
+  "type": "module",
+  "module": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "4.0.13",
+    "@ai-sdk/provider-utils": "5.0.39",
+    "ai": "7.0.97",
+    "zod": "3.25.76"
+  }
+}
