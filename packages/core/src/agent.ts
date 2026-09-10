@@ -35,7 +35,7 @@ export interface Agent {
   readonly state: AgentStateManager;
   init(): Promise<void>;
   stop(): Promise<void>;
-  rebuild(): Promise<void>;
+  /** Re-runs plugin `extendInstructions` / `extendTools` and reassembles the prompt. */
   fresh(): Promise<void>;
   send(message: AgentMessage, options?: AgentSendOptions): string | undefined;
   run(message: AgentMessage, options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
@@ -378,12 +378,9 @@ export function createAgent(config: AgentConfig): Agent {
         stopping = false;
       }
     },
-    async rebuild() {
+    async fresh() {
       await ensureInit();
       await assemblePrompt();
-    },
-    async fresh() {
-      await this.rebuild();
     },
     send(message, options = {}) {
       if (stopping) throw new Error("Agent is stopping");
