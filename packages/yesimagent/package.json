@@ -1,5 +1,5 @@
 {
-  "name": "kairou",
+  "name": "yesimagent",
   "version": "0.0.1",
   "license": "MIT",
   "files": [
@@ -20,6 +20,6 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@kairou/core": "workspace:"
+    "@yesimagent/core": "workspace:"
   }
 }

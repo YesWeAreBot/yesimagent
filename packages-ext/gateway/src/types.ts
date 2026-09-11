@@ -1,4 +1,4 @@
-import type { EmbeddingModelV4, ImageModelV4, LanguageModelV4, ProviderV4, RerankingModelV4, SpeechModelV4, TranscriptionModelV4 } from "@kairou/core";
+import type { EmbeddingModelV4, ImageModelV4, LanguageModelV4, ProviderV4, RerankingModelV4, SpeechModelV4, TranscriptionModelV4 } from "@yesimagent/core";
 
 /* Model vocabulary */
 

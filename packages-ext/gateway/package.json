@@ -1,5 +1,5 @@
 {
-  "name": "@kairou/gateway",
+  "name": "@yesimagent/gateway",
   "version": "0.0.1",
   "license": "MIT",
   "files": [
@@ -26,9 +26,9 @@
     "@ai-sdk/openai-compatible": "3.0.47"
   },
   "devDependencies": {
-    "@kairou/core": "workspace:"
+    "@yesimagent/core": "workspace:"
   },
   "peerDependencies": {
-    "@kairou/core": "workspace:"
+    "@yesimagent/core": "workspace:"
   }
 }

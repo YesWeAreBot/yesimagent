@@ -1,21 +1,21 @@
-# @kairou/core
+# @yesimagent/core
 
 A small agent runtime on the [AI SDK](https://ai-sdk.dev). It runs turns — queueing an incoming message, reading history, calling the model, executing tools, and emitting events — while storage, state, and plugins stay pluggable.
 
-- **AI SDK underneath** — the model loop is `streamText` with an `AbortSignal`; messages map onto `ModelMessage`. Re-exports `ai`, `@ai-sdk/provider` and `@ai-sdk/provider-utils`, so a host depending on `@kairou/core` sees one consistent AI SDK.
+- **AI SDK underneath** — the model loop is `streamText` with an `AbortSignal`; messages map onto `ModelMessage`. Re-exports `ai`, `@ai-sdk/provider` and `@ai-sdk/provider-utils`, so a host depending on `@yesimagent/core` sees one consistent AI SDK.
 - **Append-only entries** — everything that happens lands in storage as typed entries. History is what actually happened, and plugins can read and transform it before each step.
 - **Turns are explicit** — one active turn at a time, with `defer` / `join` / `reject` behavior for messages that arrive mid-turn.
 
 ## Install
 
 ```sh
-pnpm add @kairou/core
+pnpm add @yesimagent/core
 ```
 
 ## Quickstart
 
 ```ts
-import { createAgent, createUserMessage } from "@kairou/core";
+import { createAgent, createUserMessage } from "@yesimagent/core";
 import { createOpenAI } from "@ai-sdk/openai";
 
 const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -41,7 +41,7 @@ await agent.wait();
 ```ts
 interface AgentConfig {
   id?: string; // defaults to a random UUID
-  model: LanguageModel; // any AI SDK LanguageModel, e.g. from @kairou/gateway
+  model: LanguageModel; // any AI SDK LanguageModel, e.g. from @yesimagent/gateway
   instructions?: string; // system prompt, joined with plugin instructions
   tools?: AgentToolSet; // see Tools
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
@@ -134,7 +134,7 @@ Tool events: `tool.start`, `tool.done`, `tool.failed`, `tool.blocked`.
 A plugin extends the agent through small, optional hooks:
 
 ```ts
-import type { AgentPlugin } from "@kairou/core";
+import type { AgentPlugin } from "@yesimagent/core";
 
 const memory: AgentPlugin = {
   name: "memory",
@@ -163,7 +163,7 @@ The hook families:
 `agent.state` is a plain object plugins and instructions can read and write. `AgentCustomState` is the extension point — declare-merge your fields into it. State changes are serialized and appended to storage as `state` entries; on init, the latest one is restored, falling back to `initialState`.
 
 ```ts
-declare module "@kairou/core" {
+declare module "@yesimagent/core" {
   interface AgentCustomState {
     userName?: string;
   }

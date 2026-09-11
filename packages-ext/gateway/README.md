@@ -1,4 +1,4 @@
-# @kairou/gateway
+# @yesimagent/gateway
 
 An AI SDK model registry. Resolve a `provider:model` reference to a native AI SDK model, with failover groups and circuit breakers on top. Cordis-free — no framework, no service shell.
 
@@ -11,13 +11,13 @@ The gateway owns the boring part of using many providers: building AI SDK provid
 ## Install
 
 ```sh
-npm add @kairou/gateway
+npm add @yesimagent/gateway
 ```
 
 ## Quickstart
 
 ```ts
-import { createGateway } from "@kairou/gateway";
+import { createGateway } from "@yesimagent/gateway";
 
 const gateway = createGateway({
   config: {
@@ -110,7 +110,7 @@ Anything the built-in dialects don't cover, register through `apis` — includin
 
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
-import { createGateway } from "@kairou/gateway";
+import { createGateway } from "@yesimagent/gateway";
 
 const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
 

@@ -1,4 +1,4 @@
-import type { LanguageModelV4 } from "@kairou/core";
+import type { LanguageModelV4 } from "@yesimagent/core";
 
 import { CircuitBreaker } from "./circuit-breaker.js";
 import type { Candidate, CircuitBreakerConfig, CircuitBreakerStatus, Group, GroupStrategy, ModelMetadata } from "./types.js";

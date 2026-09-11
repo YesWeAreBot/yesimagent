@@ -6,7 +6,7 @@ import {
   MockLanguageModelV4,
   MockProviderV4,
   type ProviderV4,
-} from "@kairou/core";
+} from "@yesimagent/core";
 
 import type { ProviderSetup } from "../src/types.js";
 

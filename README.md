@@ -1,4 +1,4 @@
-# kairou
+# yesimagent
 
 TypeScript packages for building agents on the [AI SDK](https://ai-sdk.dev): a runtime kernel, and an AI SDK model registry.
 
@@ -8,9 +8,9 @@ TypeScript packages for building agents on the [AI SDK](https://ai-sdk.dev): a r
 
 | Package                                   | Description                                                                                                                          |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| [`@kairou/core`](packages/core)           | Agent runtime: turns, channels, entries, state, storage, tools. Re-exports the AI SDK so hosts depend on one package.                |
-| [`@kairou/gateway`](packages-ext/gateway) | AI SDK model registry: resolve `provider:model` references to native models, with failover groups and circuit breakers. Cordis-free. |
-| [`kairou`](packages/kairou)               | Umbrella package re-exporting `@kairou/core`.                                                                                        |
+| [`@yesimagent/core`](packages/core)           | Agent runtime: turns, channels, entries, state, storage, tools. Re-exports the AI SDK so hosts depend on one package.                |
+| [`@yesimagent/gateway`](packages-ext/gateway) | AI SDK model registry: resolve `provider:model` references to native models, with failover groups and circuit breakers. Cordis-free. |
+| [`yesimagent`](packages/yesimagent)               | Umbrella package re-exporting `@yesimagent/core`.                                                                                        |
 
 ## License
 

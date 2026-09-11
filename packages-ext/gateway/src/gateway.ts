@@ -1,5 +1,5 @@
-import { formatErrorCause } from "@kairou/core";
-import type { ProviderV4 } from "@kairou/core";
+import { formatErrorCause } from "@yesimagent/core";
+import type { ProviderV4 } from "@yesimagent/core";
 
 import { builtinApis } from "./dialects/index.js";
 import { GatewayError } from "./errors.js";
