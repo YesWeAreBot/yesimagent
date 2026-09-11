@@ -8,7 +8,7 @@ import { openaiResponses } from "./openai.js";
  * The dialects a gateway starts with. Keys are the values `providers.<id>.api` takes; a host can
  * replace or extend any of them through `GatewayOptions.apis`.
  */
-export const builtinApis: Readonly<Record<string, ApiFactory>> = {
+export const BUILTIN_APIS: Readonly<Record<string, ApiFactory>> = {
   "openai-completions": openaiCompletions,
   "openai-responses": openaiResponses,
   "anthropic-messages": anthropicMessages,

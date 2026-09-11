@@ -80,7 +80,7 @@ describe("gateway catalog", () => {
           api: "mock",
           apiKey: "sk",
           models: [
-            { id: "m", metadata: { name: "M", contextWindow: 262144 } },
+            { id: "m", name: "M", contextWindow: 262144 },
             { id: "pic", type: "image" },
           ],
         },
@@ -95,7 +95,7 @@ describe("gateway catalog", () => {
     const gateway = build(
       {
         providers: {
-          relay: { api: "mock", apiKey: "sk", models: [{ id: "a" }, { id: "b", type: "embedding" }, { id: "a", metadata: { name: "second" } }] },
+          relay: { api: "mock", apiKey: "sk", models: [{ id: "a" }, { id: "b", type: "embedding" }, { id: "a", name: "second" }] },
         },
       },
       { apis: { mock: () => openProvider() } },

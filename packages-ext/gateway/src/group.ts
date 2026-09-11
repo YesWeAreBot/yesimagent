@@ -8,7 +8,7 @@ export interface CandidateSource {
   /** Canonical reference, `${provider}:${modelId}`. */
   readonly id: string;
   readonly model: LanguageModelV4;
-  readonly metadata: ModelMetadata;
+  readonly metadata: ModelMetadata<"language">;
 }
 
 /** One declared member: the reference it was configured under, and what it resolves to. */

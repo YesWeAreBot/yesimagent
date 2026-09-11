@@ -1,43 +1,48 @@
 import type { EmbeddingModelV4, ImageModelV4, LanguageModelV4, ProviderV4, RerankingModelV4, SpeechModelV4, TranscriptionModelV4 } from "@yesimagent/core";
 
-/* Model vocabulary */
-
-/** Modality an AI SDK `ProviderV4` can serve. */
 export const MODEL_TYPES = ["language", "embedding", "image", "speech", "transcription", "reranking"] as const;
 
 export type ModelType = (typeof MODEL_TYPES)[number];
 
-/** Input a model accepts. */
 export const MODEL_MODALITIES = ["text", "image", "audio", "video", "pdf"] as const;
 
 export type ModelModality = (typeof MODEL_MODALITIES)[number];
 
 /* Configuration */
 
-/** Knowledge about a model that configuration can declare, used by hosts to pick between candidates. */
-export interface ModelMetadata {
-  /** Human readable name. */
+export interface BaseModelConfig {
+  /** Model id as the provider knows it, e.g. `gpt-4o`. */
+  readonly id: string;
+  readonly type?: ModelType;
   readonly name?: string;
-  /** Whether the model supports tool calling. */
+}
+
+export interface LanguageModelConfig extends BaseModelConfig {
+  readonly type: "language";
   readonly toolCall?: boolean;
-  /** Whether the model produces reasoning content. */
   readonly reasoning?: boolean;
-  /** Accepted input modalities. */
+  readonly thinking?: { mode: string; efforts: string[] };
   readonly input?: readonly ModelModality[];
-  /** Total context window, in tokens. */
   readonly contextWindow?: number;
-  /** Maximum output, in tokens. */
   readonly maxTokens?: number;
 }
 
-/** One model an endpoint serves. */
-export interface ModelConfig {
-  /** Model id as the provider knows it, e.g. `gpt-4o`. */
-  readonly id: string;
-  /** Defaults to `language`. */
-  readonly type?: ModelType;
-  readonly metadata?: ModelMetadata;
+export interface EmbeddingModelConfig extends BaseModelConfig {
+  readonly type: "embedding";
+  readonly input?: readonly ModelModality[];
+  readonly dimensions?: number;
 }
+
+export type ModelConfig = BaseModelConfig | LanguageModelConfig | EmbeddingModelConfig;
+
+/**
+ * What a declaration carries besides its identity, keyed by modality. A config that pins its `type`
+ * contributes the fields it adds; every other modality falls back to the base ones. Both halves
+ * derive from `ModelConfig`, so a new config variant or a new `ModelType` needs no edit here.
+ */
+export type ModelMetadata<T extends ModelType = ModelType> = (Record<ModelType, Omit<BaseModelConfig, "id" | "type">> & {
+  [C in ModelConfig as C extends { type: infer K extends ModelType } ? K : never]: Omit<C, "id" | "type">;
+})[T];
 
 /** An endpoint, with the credentials and passthrough settings needed to talk to it. */
 export interface ProviderConfig {
@@ -120,47 +125,31 @@ export type ApiFactory = (setup: ProviderSetup) => ProviderV4;
 /* Resolved models */
 
 /** A model the gateway can resolve. */
-export interface Model {
-  /** Canonical reference, `${provider}:${modelId}`. */
+export interface Model<T extends ModelType = ModelType> {
+  /** `${provider}:${modelId}` */
   readonly id: string;
   readonly provider: string;
-  /** Model id as the provider knows it. */
   readonly modelId: string;
-  readonly type: ModelType;
-  readonly metadata: ModelMetadata;
+  readonly type: T;
+  readonly metadata: ModelMetadata<T>;
 }
 
-/**
- * One attempt in a failover loop. `success()` / `failure()` feed the owning group's breaker.
- */
 export interface Candidate {
-  /** Canonical reference, `${provider}:${modelId}`. */
+  /** `${provider}:${modelId}` */
   readonly id: string;
-  /** Native AI SDK model, ready to hand to `generateText` / `streamText`. */
   readonly model: LanguageModelV4;
-  readonly metadata: ModelMetadata;
-  /** Report that this candidate handled the call. */
+  readonly metadata: ModelMetadata<"language">;
   success(): void;
-  /** Report that this candidate failed, which may open the group's breaker for it. */
   failure(): void;
 }
 
-/** A group of interchangeable language models, plus the health of each one. */
 export interface Group {
   readonly name: string;
   readonly strategy: GroupStrategy;
-  /**
-   * Candidates in the strategy's order. Models whose breaker is open are omitted while a
-   * closed candidate remains, and included again once every breaker is open or half-open.
-   */
   candidates(): readonly Candidate[];
-  /** Breaker state per model reference. */
   status(): Readonly<Record<string, CircuitBreakerStatus>>;
-  /** Closes every breaker in the group. */
   reset(): void;
 }
-
-/* Gateway */
 
 export interface GatewayOptions {
   readonly config: GatewayConfig;
@@ -168,7 +157,6 @@ export interface GatewayOptions {
   readonly apis?: Readonly<Record<string, ApiFactory>>;
   /** Transport for every provider, unless a provider overrides it through `settings`. */
   readonly fetch?: typeof globalThis.fetch;
-  /** Source for `${NAME}` expansion in `apiKey` and `headers`. Defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -203,12 +191,13 @@ export interface Gateway {
   speechModel(name: string): SpeechModelV4;
   transcriptionModel(name: string): TranscriptionModelV4;
   rerankingModel(name: string): RerankingModelV4;
+
   /** The group's candidates, for callers that want to try another model after a failure. */
   group(name: string): Group;
   groups(): readonly string[];
 
   /** The models declared across every provider, optionally narrowed to one modality. */
-  models(type?: ModelType): readonly Model[];
+  models<T extends ModelType = ModelType>(type?: T): ReadonlyArray<Model<T>>;
   /** A single model by `${provider}:${modelId}`, or `undefined` when nothing is declared under it. */
   model(name: string): Model | undefined;
   providers(): readonly string[];

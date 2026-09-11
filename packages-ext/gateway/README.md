@@ -26,7 +26,7 @@ const gateway = createGateway({
         api: "openai-completions",
         baseUrl: "https://relay.example.com/v1",
         apiKey: "${RELAY_KEY}",
-        models: [{ id: "main", metadata: { name: "Main", contextWindow: 262144 } }],
+        models: [{ id: "main", name: "Main", contextWindow: 262144 }],
       },
     },
     groups: {
@@ -69,11 +69,17 @@ interface ProviderConfig {
 interface ModelConfig {
   id: string; // model id as the provider knows it, e.g. "gpt-5.1"
   type?: ModelType; // defaults to "language"
-  metadata?: ModelMetadata; // name, toolCall, reasoning, input, contextWindow, maxTokens
+  name?: string; // display name
+  toolCall?: boolean; // whether the model calls tools
+  reasoning?: boolean; // whether the model produces reasoning content
+  input?: ModelModality[]; // accepted input modalities
+  contextWindow?: number; // total context, in tokens
+  maxTokens?: number; // maximum output, in tokens
+  dimensions?: number; // embedding models only
 }
 ```
 
-Everything a model needs is in the configuration: the catalog is built once from `models` at load time, and `gateway.model("relay:main")` looks it up. There is no discovery, no background refresh, no derived state to invalidate — `reconfigure()` replaces the whole picture.
+Everything a model needs is in the configuration: the catalog is built once from `models` at load time, and `gateway.model("relay:main")` looks it up. Everything a declaration carries besides its identity becomes the entry's `metadata`, typed by modality — `ModelMetadata<T>` is derived from `ModelConfig`, so a `language` entry carries `toolCall` / `contextWindow` while an `image` entry carries `name` alone, and a new config variant needs no extra mapping. There is no discovery, no background refresh, no derived state to invalidate — `reconfigure()` replaces the whole picture.
 
 ### Groups
 
@@ -141,12 +147,13 @@ interface Gateway {
   group(name: string): Group;
   groups(): readonly string[];
 
-  models(type?: ModelType): readonly Model[]; // the catalog, for host-side decisions
+  models<T extends ModelType = ModelType>(type?: T): readonly Model<T>[]; // the catalog, for host-side decisions
   model(name: string): Model | undefined;
   providers(): readonly string[];
 }
 ```
 
+- `models("language")` narrows both halves of an entry: the result is `Model<"language">`, whose `metadata` is `ModelMetadata<"language">`. `models()` without an argument returns the whole catalog.
 - `languageModel("relay:main")` resolves and builds; a typo, a wrong modality, or an unlisted model throws a `GatewayError` naming the reference.
 - `model("relay:main")` is the pure catalog query: `undefined` when nothing is declared under that reference. Hosts that want pre-flight validation check it before resolving.
 - `provider("relay")` hands back the AI SDK provider for the parts the gateway doesn't model, such as `files()` and `skills()`.

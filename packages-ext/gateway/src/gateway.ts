@@ -1,7 +1,7 @@
 import { formatErrorCause } from "@yesimagent/core";
 import type { ProviderV4 } from "@yesimagent/core";
 
-import { builtinApis } from "./dialects/index.js";
+import { BUILTIN_APIS } from "./dialects/index.js";
 import { GatewayError } from "./errors.js";
 import { ModelGroup } from "./group.js";
 import type { CandidateSource } from "./group.js";
@@ -39,9 +39,9 @@ export function createGateway(options: GatewayOptions): Gateway {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const env = options.env ?? process.env;
 
-  const apis = new Map<string, ApiFactory>(Object.entries(builtinApis));
+  const apis = new Map<string, ApiFactory>(Object.entries(BUILTIN_APIS));
   const providers = new Map<string, ProviderV4>();
-  const models = new Map<string, Model>();
+  const models = new Map<string, Model<ModelType>>();
   const groups = new Map<string, ModelGroup>();
 
   let config: GatewayConfig;
@@ -62,14 +62,14 @@ export function createGateway(options: GatewayOptions): Gateway {
   };
 
   /** Resolves a reference to the provider behind it and the declared model it names. */
-  const locate = (type: ModelType, reference: string): { provider: ProviderV4; model: Model } => {
+  const locate = <T extends ModelType>(type: T, reference: string): { provider: ProviderV4; model: Model<T> } => {
     const parts = split(reference);
     if (!parts) throw new GatewayError(`"${reference}" is not a "provider:model" reference`);
 
     const provider = providers.get(parts[0]);
     if (!provider) throw new GatewayError(`Unknown provider "${parts[0]}" (from "${reference}"); registered: ${[...providers.keys()].join(", ") || "none"}`);
 
-    const model = models.get(`${parts[0]}:${parts[1]}`);
+    const model = models.get(`${parts[0]}:${parts[1]}`) as Model<T>;
     if (!model) throw new GatewayError(`Provider "${parts[0]}" does not declare "${parts[1]}"`);
     if (model.type !== type) throw new GatewayError(`Model "${model.id}" is declared as ${model.type}, not ${type}`);
 
@@ -103,8 +103,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 
       providers.set(id, provider);
       for (const declared of declaration.models ?? []) {
-        const reference = `${id}:${declared.id}`;
-        models.set(reference, { id: reference, provider: id, modelId: declared.id, type: declared.type ?? "language", metadata: declared.metadata ?? {} });
+        const { id: modelId, type = "language", ...metadata } = declared;
+        const reference = `${id}:${modelId}`;
+        models.set(reference, { id: reference, provider: id, modelId, type, metadata });
       }
     }
 
@@ -180,9 +181,9 @@ export function createGateway(options: GatewayOptions): Gateway {
       return [...groups.keys()];
     },
 
-    models(type) {
-      const all = [...models.values()];
-      return type === undefined ? all : all.filter((model) => model.type === type);
+    models<T extends ModelType = ModelType>(type?: T): ReadonlyArray<Model<T>> {
+      // `Model<T>` only narrows the `type` tag, which the predicate is what makes true.
+      return [...models.values()].filter((model): model is Model<T> => type === undefined || model.type === type);
     },
 
     model(name) {
