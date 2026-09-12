@@ -65,6 +65,7 @@ export interface TurnFailedEvent {
     name: string;
     message: string;
     cause?: string;
+    stack?: string;
   };
 }
 
@@ -100,6 +101,7 @@ export interface ToolFailedEvent {
     name: string;
     message: string;
     cause?: string;
+    stack?: string;
   };
 }
 

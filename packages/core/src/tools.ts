@@ -1,4 +1,5 @@
-import type { Tool, ToolExecutionOptions, ToolSet } from "ai";
+import { Context } from "@ai-sdk/provider-utils";
+import type { JSONValue, Tool, ToolExecutionOptions, ToolSet } from "ai";
 
 import type { AgentChannel } from "./channel.js";
 import type { AgentEntry } from "./entry.js";
@@ -8,8 +9,12 @@ import type { AgentMessage } from "./message.js";
 import type { AgentStateManager } from "./state.js";
 import type { AgentStorage } from "./storage.js";
 
-export type AgentTool = Tool & {
-  terminal?: boolean | ((input: unknown) => boolean);
+export type AgentTool<
+  INPUT extends JSONValue | unknown | never = any,
+  OUTPUT extends JSONValue | unknown | never = any,
+  CONTEXT extends Context | unknown | never = any,
+> = Tool<INPUT, OUTPUT, CONTEXT> & {
+  terminal?: boolean | ((input: INPUT) => boolean);
 };
 
 export type AgentToolSet = Record<string, AgentTool>;

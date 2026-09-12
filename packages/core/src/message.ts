@@ -6,14 +6,14 @@ export interface AgentMessageBase {
   timestamp: number;
 }
 
-export interface CustomMessageBase<T extends string = string, D = unknown> extends AgentMessageBase {
+export interface CustomMessage<T extends string = string, D = unknown> extends AgentMessageBase {
   role: "custom";
   type: T;
   data: D;
 }
 
 export interface AgentCustomMessage {
-  custom: CustomMessageBase<"custom", unknown>;
+  custom: CustomMessage<"custom", unknown>;
 }
 
 export interface AgentUserMessage extends AgentMessageBase, UserModelMessage {}
@@ -57,7 +57,7 @@ export function createToolMessage(content: ToolContent, options: Omit<Partial<Ag
 
 export function createCustomMessage<T extends Extract<keyof AgentCustomMessage, string>>(
   type: T,
-  data: AgentCustomMessage[T] extends CustomMessageBase<T, infer Data> ? Data : never,
+  data: AgentCustomMessage[T] extends CustomMessage<infer U, infer V> ? V : never,
   options: CreateMessageOptions = {},
 ): AgentCustomMessage[T] {
   return { ...createMessageBase(options), role: "custom", type, data } as AgentCustomMessage[T];

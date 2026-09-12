@@ -34,6 +34,7 @@ export interface TurnError {
   name: string;
   message: string;
   cause?: string;
+  stack?: string;
 }
 
 export interface TurnResult {
@@ -245,7 +246,12 @@ function isAbortError(error: unknown): boolean {
 
 function serializeError(error: unknown): TurnError {
   if (error instanceof Error) {
-    return { name: error.name, message: error.message, ...(error.cause === undefined ? {} : { cause: String(error.cause) }) };
+    return {
+      name: error.name,
+      message: error.message,
+      ...(error.cause === undefined ? {} : { cause: String(error.cause) }),
+      ...(error.stack === undefined ? {} : { stack: error.stack }),
+    };
   }
-  return { name: "Error", message: String(error) };
+  return { name: "Error", message: String(error), ...(error instanceof Error && error.stack ? { stack: error.stack } : {}) };
 }
