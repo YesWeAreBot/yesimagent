@@ -1,9 +1,9 @@
-import type { ModelMessage } from "ai";
+import type { LanguageModelCallOptions, ModelMessage, ToolChoice, ToolSet } from "ai";
 
 import type { Agent } from "./agent.js";
 import type { AgentEntry } from "./entry.js";
 import type { AgentMessage } from "./message.js";
-import type { AgentToolSet, ToolCallInfo, ToolDecision, ToolResultInfo } from "./tools.js";
+import type { ToolCallInfo, ToolDecision, ToolResultInfo } from "./tools.js";
 import type { TurnResult } from "./turn.js";
 
 export type Awaitable<T> = T | Promise<T>;
@@ -16,6 +16,15 @@ export interface TurnOptions {
 export interface StepOptions extends TurnOptions {
   readonly stepNumber: number;
   readonly messages: readonly ModelMessage[];
+  /**
+   * Tool context keyed by tool name, validated against each tool's `contextSchema` when it declares one.
+   * A `prepareStep` that returns a different map changes it for the rest of the turn.
+   */
+  readonly toolsContext: Record<string, unknown>;
+  readonly toolChoice?: ToolChoice<ToolSet>;
+  readonly activeTools?: readonly string[];
+  /** Model call settings for this step only; undefined fields fall back to the agent's. */
+  readonly settings?: LanguageModelCallOptions;
 }
 
 export interface AgentPlugin {
@@ -23,7 +32,7 @@ export interface AgentPlugin {
   enforce?: "pre" | "post";
   init?(agent: Agent): Awaitable<void>;
   stop?(): Awaitable<void>;
-  extendTools?(): Awaitable<AgentToolSet | void>;
+  extendTools?(): Awaitable<ToolSet | void>;
   extendInstructions?(): Awaitable<string | void>;
   onAppend?(entries: AgentEntry[]): Awaitable<AgentEntry[]>;
   transformEntries?(entries: readonly AgentEntry[], options: TurnOptions): Awaitable<readonly AgentEntry[]>;

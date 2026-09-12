@@ -43,7 +43,12 @@ interface AgentConfig {
   id?: string; // defaults to a random UUID
   model: LanguageModel; // any AI SDK LanguageModel, e.g. from @yesimagent/gateway
   instructions?: string; // system prompt, joined with plugin instructions
-  tools?: AgentToolSet; // see Tools
+  tools?: ToolSet; // see Tools
+  toolsContext?: Record<string, unknown>; // per-tool context, see Tools
+  toolChoice?: ToolChoice<ToolSet>; // per step; a prepareStep may override it
+  activeTools?: readonly string[]; // tools sent to the model per step; omit for all of them
+  settings?: LanguageModelCallOptions; // sampling and limits for every step
+  toolChoiceViolation?: "fail" | "fallback"; // default "fail"; see Turns
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
   plugins?: readonly AgentPlugin[]; // see Plugins
   maxSteps?: number; // per turn, defaults to 20
@@ -93,22 +98,24 @@ Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `c
 
 ## Turns
 
-A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain — or until every tool call came from a `terminal` tool, which ends the turn even though tool calls were made.
+A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain — or until every executed tool call was marked `endTurn` by the plugins' `afterToolCall`, which ends the turn even though tool calls were made. A step whose calls were all invalid keeps the turn going, so the model can repair its input.
+
+An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceViolationError` — or, with `toolChoiceViolation: "fallback"`, re-runs that step once with `toolChoice: "auto"`.
 
 Turn events:
 
-| Event          | Emitted when                                                       |
-| -------------- | ------------------------------------------------------------------ |
-| `turn.queued`  | A message was deferred behind an active turn.                      |
-| `turn.start`   | The turn begins.                                                   |
-| `turn.step`    | A step finished, with that step's `usage` and `finishReason`.      |
-| `turn.done`    | The turn finished; accumulated `usage` included.                   |
-| `turn.failed`  | The model or a tool threw; `error` is `{ name, message, cause? }`. |
-| `turn.aborted` | The turn was interrupted.                                          |
+| Event          | Emitted when                                                  |
+| -------------- | ------------------------------------------------------------- |
+| `turn.queued`  | A message was deferred behind an active turn.                 |
+| `turn.start`   | The turn begins.                                              |
+| `turn.step`    | A step finished, with that step's `usage` and `finishReason`. |
+| `turn.done`    | The turn finished; accumulated `usage` included.              |
+| `turn.failed`  | The model threw; `error` is `{ name, message, cause? }`.      |
+| `turn.aborted` | The turn was interrupted.                                     |
 
 ## Tools
 
-Tools are AI SDK tools with one extension — `terminal`:
+Tools are AI SDK tools. Core executes them itself and hands the model results as JSON:
 
 ```ts
 import { tool } from "ai";
@@ -119,15 +126,59 @@ const tools = {
     description: "Look at the phone.",
     inputSchema: z.object({}),
     execute: (input, { abortSignal }) => checkPhone({ abortSignal }),
-    // A terminal tool ends the turn after it runs, instead of looping another model step.
-    terminal: true,
   }),
 };
 ```
 
-Tool executions receive an `AgentToolRuntime` (agent id, channel, state, storage, turn id, signal, messages), so a tool can act on the agent it runs in. Plugins can intercept every call: `beforeToolCall` may `allow`, `block` (with a reason), or `replace` the arguments; `afterToolCall` can transform results. Conflicting tool names across sources throw `ToolConflictError` at assembly.
+Every call gets a result. A returned value is sent as text when it is a string, as JSON otherwise, or through the tool's own `toModelOutput` when it declares one; a thrown error becomes an `error-text` result and the step continues, so the model can react. A tool with no `execute` ends the turn.
 
-Tool events: `tool.start`, `tool.done`, `tool.failed`, `tool.blocked`.
+### Tool context
+
+`toolsContext` hands server-side state to tools without putting it in the prompt. Each tool reads its own entry from `execute`'s second argument:
+
+```ts
+const agent = createAgent({
+  model,
+  tools: { send_message: sendMessageTool },
+  // keyed by tool name; `ctx` here is any host service, not a JSON value
+  toolsContext: { send_message: { bot, channelOf: (id: string) => lookup(id) } },
+});
+
+// inside the tool
+execute: (input, { context }) => context.bot.sendMessage(context.channelOf(input.channel), input.message);
+```
+
+When a tool declares a `contextSchema`, its entry is validated against it before execution; without one, the value passes through untouched — which is what non-JSON services need. A `prepareStep` may return a new `toolsContext` to change it for the rest of the turn.
+
+A bare object built next to `createAgent` is checked against `ToolSet`, which types `execute`'s arguments loosely. Annotate the tool (or build it with `tool()`) to keep the context and results typed:
+
+```ts
+import type { FunctionTool } from "@yesimagent/core";
+
+const sendMessage: FunctionTool<SendInput, SendOutput, SendMessageContext> = {
+  inputSchema: jsonSchema<SendInput>({/* … */}),
+  toModelOutput: ({ output }) => ({ type: "text", value: output.summary }),
+  execute: (input, { context }) => context.bot.sendMessage(input.channel, input.message),
+};
+```
+
+### Ending the turn from a result
+
+Turn termination is a plugin decision, not a tool flag: `afterToolCall` receives `{ toolCallId, toolName, args, result, isError, endTurn }` and returns the same shape. Set `endTurn` when the result means the turn is over — typically a successful send — and leave it `false` so the model gets another step, typically after a failure it can fix:
+
+```ts
+const stopper: AgentPlugin = {
+  name: "stop-after-send",
+  afterToolCall(result) {
+    if (result.toolName !== "send_message" || result.isError) return result;
+    return { ...result, endTurn: result.result.ok === true };
+  },
+};
+```
+
+Plugins can also intercept calls before they run: `beforeToolCall` may `allow`, `block` (with a reason), or `replace` the arguments, and `afterToolCall` can rewrite the result. Conflicting tool names across sources throw `ToolConflictError` at assembly.
+
+Tool events: `tool.start`, `tool.done`, `tool.failed`, `tool.blocked`, and `tool.result_repaired` — emitted for a tool call core had to fill a result in for, which happens when a stored history is missing one.
 
 ## Plugins
 
@@ -148,15 +199,15 @@ const memory: AgentPlugin = {
 
 The hook families:
 
-| Hooks                                                 | Run                                                                                  |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `init` / `stop`                                       | Agent lifecycle. `init` failures roll back already-initialized plugins.              |
-| `extendInstructions` / `extendTools`                  | Prompt assembly; each contributes a paragraph / a tool set.                          |
-| `onAppend` / `transformEntries` / `transformMessages` | History pipeline, chained in plugin order; each hook's return feeds the next plugin. |
-| `toModelMessages`                                     | Projects custom messages into model messages; first non-`undefined` wins.            |
-| `prepareStep`                                         | Rewrites the step (messages, turnId, signal) before the model call.                  |
-| `beforeToolCall` / `afterToolCall`                    | Tool decisions and result transformation.                                            |
-| `onTurnFinish`                                        | Observer after a turn completes; must not change the result.                         |
+| Hooks                                                 | Run                                                                                                  |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `init` / `stop`                                       | Agent lifecycle. `init` failures roll back already-initialized plugins.                              |
+| `extendInstructions` / `extendTools`                  | Prompt assembly; each contributes a paragraph / a tool set.                                          |
+| `onAppend` / `transformEntries` / `transformMessages` | History pipeline, chained in plugin order; each hook's return feeds the next plugin.                 |
+| `toModelMessages`                                     | Projects custom messages into model messages; first non-`undefined` wins.                            |
+| `prepareStep`                                         | Rewrites the step (messages, toolsContext, toolChoice, activeTools, settings) before the model call. |
+| `beforeToolCall` / `afterToolCall`                    | Tool decisions and result transformation, including whether the result ends the turn.                |
+| `onTurnFinish`                                        | Observer after a turn completes; must not change the result.                                         |
 
 ## State
 

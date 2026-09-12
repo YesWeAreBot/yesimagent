@@ -20,6 +20,7 @@ export type AgentEvent =
   | ToolDoneEvent
   | ToolFailedEvent
   | ToolBlockedEvent
+  | ToolResultRepairedEvent
   | MessageAppendedEvent;
 
 export interface AgentInitEvent {
@@ -111,6 +112,13 @@ export interface ToolBlockedEvent {
   toolName: string;
   toolCallId?: string;
   reason?: string;
+}
+
+export interface ToolResultRepairedEvent {
+  type: "tool.result_repaired";
+  turnId: string;
+  toolName: string;
+  toolCallId?: string;
 }
 
 export interface MessageAppendedEvent {
