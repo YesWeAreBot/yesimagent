@@ -39,4 +39,46 @@ describe("AgentQueue", () => {
     });
     expect(result?.messages).toHaveLength(3);
   });
+
+  it("persists a joined message at the step boundary, not during the step", async () => {
+    const log: string[] = [];
+    const queue = new AgentQueue({
+      maxSteps: 2,
+      async runStep(request, stepNumber) {
+        log.push(`step:${stepNumber}`);
+        if (stepNumber === 0) {
+          request.addJoined([createUserMessage("late")], async () => {
+            log.push("persist");
+          });
+          log.push("in-step");
+        }
+        return { messages: [], continue: stepNumber === 0 };
+      },
+      async emit() {},
+    });
+
+    queue.enqueue([createUserMessage("first")]);
+    await queue.wait();
+
+    expect(log).toEqual(["step:0", "in-step", "persist", "step:1"]);
+  });
+
+  it("persists a message joined during the final step", async () => {
+    const log: string[] = [];
+    const queue = new AgentQueue({
+      maxSteps: 1,
+      async runStep(request) {
+        request.addJoined([createUserMessage("late")], async () => {
+          log.push("persist");
+        });
+        return { messages: [], continue: false };
+      },
+      async emit() {},
+    });
+
+    queue.enqueue([createUserMessage("first")]);
+    await queue.wait();
+
+    expect(log).toEqual(["persist"]);
+  });
 });

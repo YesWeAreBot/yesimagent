@@ -12,7 +12,8 @@ export interface TurnRequest {
   readonly submittedAt: number;
   readonly messages: AgentMessage[];
   readonly signal: AbortSignal;
-  addJoined(messages: AgentMessage[], persistence?: Promise<void>): void;
+  /** `persist` runs at the step boundary, not at the call site — see `drainJoined`. */
+  addJoined(messages: AgentMessage[], persist?: () => Promise<void>): void;
   drainJoined(): Promise<AgentMessage[]>;
 }
 
@@ -71,7 +72,7 @@ export class AgentQueue {
     return this.active === undefined && this.queue.length === 0 && !this.pumping;
   }
 
-  enqueue(messages: AgentMessage[], behavior: BusyBehavior = "defer", persistence?: Promise<void>): string {
+  enqueue(messages: AgentMessage[], behavior: BusyBehavior = "defer", persistence?: () => Promise<void>): string {
     if (this.active && behavior === "reject") throw new AgentBusyError();
 
     if (this.active && behavior === "join") {
@@ -159,10 +160,11 @@ export class AgentQueue {
         usage = addUsage(usage, result.usage);
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
 
+        const drained = await request.drainJoined();
         if (!result.continue) break;
         stepNumber += 1;
-        incoming = await request.drainJoined();
-        allMessages.push(...incoming);
+        incoming = drained;
+        allMessages.push(...drained);
       }
 
       throwIfAborted(request.signal);
@@ -202,18 +204,18 @@ export class AgentQueue {
 function createQueuedTurn(messages: AgentMessage[]): QueuedTurn {
   const controller = new AbortController();
   const joined: AgentMessage[] = [];
-  const persistence: Array<Promise<void>> = [];
+  const pending: Array<() => Promise<void>> = [];
   const request: TurnRequest = {
     turnId: crypto.randomUUID(),
     submittedAt: Date.now(),
     messages: [...messages],
     signal: controller.signal,
-    addJoined(nextMessages, pending) {
+    addJoined(nextMessages, persist) {
       joined.push(...nextMessages);
-      if (pending) persistence.push(pending);
+      if (persist) pending.push(persist);
     },
     async drainJoined() {
-      await Promise.all(persistence.splice(0));
+      await Promise.all(pending.splice(0).map((run) => run()));
       return joined.splice(0);
     },
   };

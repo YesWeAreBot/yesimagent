@@ -458,10 +458,11 @@ export function createAgent(config: AgentConfig): Agent {
       const behavior = options.ifBusy ?? "defer";
       const activeTurnId = queue.activeTurnId;
       if (behavior === "join" && activeTurnId) {
-        const persistence = ensureInit()
-          .then(() => persistMessages([message], activeTurnId))
-          .then(() => undefined);
-        return queue.enqueue([message], "join", persistence);
+        return queue.enqueue([message], "join", () =>
+          ensureInit()
+            .then(() => persistMessages([message], activeTurnId))
+            .then(() => undefined),
+        );
       }
       const turnId = queue.enqueue([message], behavior);
       if (turnId !== activeTurnId) void emit({ type: "turn.queued", turnId });
