@@ -18,7 +18,7 @@ import { createAgentHooks, orderPlugins, type AgentPlugin, type StepOptions } fr
 import { AgentStateManager, type AgentState } from "./state.js";
 import { createMemoryStorage, type AgentStorage } from "./storage.js";
 import { executeAgentTool, mergeTools, resolveToolContext, toolDefinitions, toolResultOutput } from "./tools.js";
-import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type TurnRequest, type TurnStepResult } from "./turn.js";
+import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type StepFinishDecision, type TurnRequest, type TurnStepResult } from "./turn.js";
 
 const DEFAULT_MAX_STEPS = 20;
 const MISSING_TOOL_RESULT = "Tool result was not recorded";
@@ -264,8 +264,6 @@ export function createAgent(config: AgentConfig): Agent {
     }
 
     const toolCalls = await response.toolCalls;
-    let executedCount = 0;
-    let endTurnCount = 0;
     for (const call of toolCalls) {
       // Every call needs a result: a message history with an unresolved tool call is rejected by the SDK.
       const tool = call.invalid ? undefined : stepTools[call.toolName];
@@ -276,7 +274,7 @@ export function createAgent(config: AgentConfig): Agent {
         context: call.invalid ? undefined : await resolveToolContext(call.toolName, tool, prepared.toolsContext[call.toolName]),
       };
       const execution = call.invalid
-        ? { result: call.error, isError: true, endTurn: false }
+        ? { result: call.error, isError: true }
         : await executeAgentTool(call.toolName, tool, call.input, executionOptions, {
             agentId: id,
             channel,
@@ -289,8 +287,6 @@ export function createAgent(config: AgentConfig): Agent {
             afterToolCall: hooks.afterToolCall,
             emit,
           });
-      if (!call.invalid) executedCount += 1;
-      if (execution.endTurn) endTurnCount += 1;
 
       const toolMessage = createToolMessage([
         {
@@ -308,12 +304,12 @@ export function createAgent(config: AgentConfig): Agent {
       outputMessages.push(...(await persistMessages([toolMessage], request.turnId)));
     }
 
-    const allEndTurn = executedCount > 0 && endTurnCount === executedCount;
     return {
       messages: outputMessages,
       usage,
       finishReason,
-      continue: toolCalls.length > 0 && !allEndTurn,
+      // Default: a step with tool calls continues (all-invalid ones too, so the model can repair its input). `onStepFinish` may override.
+      continue: toolCalls.length > 0,
     };
   };
 
@@ -321,6 +317,18 @@ export function createAgent(config: AgentConfig): Agent {
     maxSteps,
     runStep,
     emit,
+    onStepFinish: async (info) => {
+      let decision: StepFinishDecision | undefined;
+      for (const plugin of plugins) {
+        try {
+          const value = await plugin.onStepFinish?.(info);
+          if (value !== undefined) decision ??= value;
+        } catch {
+          // A step observer must not change the completed step result.
+        }
+      }
+      return decision;
+    },
     onTurnFinish: async (result) => {
       turnToolContexts.delete(result.turnId);
       for (const plugin of plugins) {

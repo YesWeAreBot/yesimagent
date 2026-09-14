@@ -81,4 +81,66 @@ describe("AgentQueue", () => {
 
     expect(log).toEqual(["persist"]);
   });
+
+  it("calls onStepFinish once per step, after the boundary drain", async () => {
+    const log: string[] = [];
+    const queue = new AgentQueue({
+      maxSteps: 3,
+      async runStep(request, stepNumber) {
+        log.push(`step:${stepNumber}`);
+        return { messages: [], continue: true };
+      },
+      async emit() {},
+      onStepFinish() {
+        log.push("finish");
+        return undefined;
+      },
+    });
+
+    queue.enqueue([createUserMessage("go")]);
+    await queue.wait();
+
+    expect(log).toEqual(["step:0", "finish", "step:1", "finish", "step:2", "finish"]);
+  });
+
+  it("lets onStepFinish end the turn", async () => {
+    let steps = 0;
+    const queue = new AgentQueue({
+      maxSteps: 3,
+      async runStep() {
+        steps += 1;
+        return { messages: [], continue: true };
+      },
+      async emit() {},
+      onStepFinish() {
+        return { continue: false };
+      },
+    });
+
+    queue.enqueue([createUserMessage("go")]);
+    await queue.wait();
+
+    expect(steps).toBe(1);
+  });
+
+  it("still calls onStepFinish on a final step that does not continue", async () => {
+    const log: string[] = [];
+    const queue = new AgentQueue({
+      maxSteps: 3,
+      async runStep(_request, stepNumber) {
+        log.push(`step:${stepNumber}`);
+        return { messages: [], continue: false };
+      },
+      async emit() {},
+      onStepFinish() {
+        log.push("finish");
+        return undefined;
+      },
+    });
+
+    queue.enqueue([createUserMessage("go")]);
+    await queue.wait();
+
+    expect(log).toEqual(["step:0", "finish"]);
+  });
 });

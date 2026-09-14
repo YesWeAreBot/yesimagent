@@ -4,7 +4,7 @@ import type { Agent } from "./agent.js";
 import type { AgentEntry } from "./entry.js";
 import type { AgentMessage } from "./message.js";
 import type { ToolCallInfo, ToolDecision, ToolResultInfo } from "./tools.js";
-import type { TurnResult } from "./turn.js";
+import type { StepFinishDecision, StepFinishInfo, TurnResult } from "./turn.js";
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -41,6 +41,11 @@ export interface AgentPlugin {
   prepareStep?(options: StepOptions): Awaitable<StepOptions>;
   beforeToolCall?(decision: ToolDecision, call: ToolCallInfo): Awaitable<ToolDecision>;
   afterToolCall?(result: ToolResultInfo): Awaitable<ToolResultInfo>;
+  /**
+   * Called once per step, at the step boundary, after joined messages are persisted. Returning a
+   * decision ends or continues the turn; a plugin that throws is treated as having no opinion.
+   */
+  onStepFinish?(info: StepFinishInfo): Awaitable<StepFinishDecision | void>;
   onTurnFinish?(result: TurnResult): Awaitable<void>;
 }
 

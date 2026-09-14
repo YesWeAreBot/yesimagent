@@ -98,7 +98,7 @@ Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `c
 
 ## Turns
 
-A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain — or until every executed tool call was marked `endTurn` by the plugins' `afterToolCall`, which ends the turn even though tool calls were made. A step whose calls were all invalid keeps the turn going, so the model can repair its input.
+A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain. Whether a step ends the turn is a step-level decision: after the joined messages are persisted, `onStepFinish` runs and a returned `{ continue: false }` ends the turn even though tool calls were made. A step whose calls were all invalid keeps the turn going, so the model can repair its input.
 
 An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceViolationError` — or, with `toolChoiceViolation: "fallback"`, re-runs that step once with `toolChoice: "auto"`.
 
@@ -130,7 +130,7 @@ const tools = {
 };
 ```
 
-Every call gets a result. A returned value is sent as text when it is a string, as JSON otherwise, or through the tool's own `toModelOutput` when it declares one; a thrown error becomes an `error-text` result and the step continues, so the model can react. A tool with no `execute` ends the turn.
+Every call gets a result. A returned value is sent as text when it is a string, as JSON otherwise, or through the tool's own `toModelOutput` when it declares one; a thrown error becomes an `error-text` result and the step continues, so the model can react. A tool with no `execute` records an error result and the step continues, so the model can react (within `maxSteps`).
 
 ### Tool context
 
@@ -162,19 +162,28 @@ const sendMessage: FunctionTool<SendInput, SendOutput, SendMessageContext> = {
 };
 ```
 
-### Ending the turn from a result
+### Ending the turn from a step
 
-Turn termination is a plugin decision, not a tool flag: `afterToolCall` receives `{ toolCallId, toolName, args, result, isError, endTurn }` and returns the same shape. Set `endTurn` when the result means the turn is over — typically a successful send — and leave it `false` so the model gets another step, typically after a failure it can fix:
+Turn termination is a step-level plugin decision, not a tool flag: `onStepFinish` runs once per step, after the joined messages are persisted, and receives `{ turnId, stepNumber, result }` where `result` is that step's messages. Return `{ continue: false }` when the step means the turn is over — typically a successful send — and return nothing so the model gets another step, typically after a failure it can fix:
 
 ```ts
 const stopper: AgentPlugin = {
   name: "stop-after-send",
-  afterToolCall(result) {
-    if (result.toolName !== "send_message" || result.isError) return result;
-    return { ...result, endTurn: result.result.ok === true };
+  onStepFinish(info) {
+    for (const message of info.result.messages) {
+      if (message.role !== "tool") continue;
+      for (const part of message.content) {
+        if (part.type !== "tool-result" || part.toolName !== "send") continue;
+        const output = typeof part.output === "object" && part.output !== null && "value" in part.output ? part.output.value : undefined;
+        if (typeof output === "object" && output !== null && "ok" in output && output.ok === true) return { continue: false };
+      }
+    }
+    return undefined;
   },
 };
 ```
+
+The first plugin to return a decision owns it; the rest still observe the same step. A plugin that throws is treated as having no opinion.
 
 Plugins can also intercept calls before they run: `beforeToolCall` may `allow`, `block` (with a reason), or `replace` the arguments, and `afterToolCall` can rewrite the result. Conflicting tool names across sources throw `ToolConflictError` at assembly.
 

@@ -68,13 +68,19 @@ function sendTool(execute: ToolExecuteFunction<SendInput, SendOutput, unknown>):
   return { send: { description: "Send a message.", inputSchema: bodySchema, execute } };
 }
 
-/** Ends the turn only on a successful send, the policy a chat host wants. */
+/** Ends the turn after a send step, the policy a chat host wants. */
 const stopAfterSend: AgentPlugin = {
   name: "stop-after-send",
-  afterToolCall(result) {
-    if (result.toolName !== "send" || result.isError) return result;
-    const output = result.result as { ok?: boolean };
-    return { ...result, endTurn: output.ok === true };
+  onStepFinish(info) {
+    for (const message of info.result.messages) {
+      if (message.role !== "tool") continue;
+      for (const part of message.content) {
+        if (part.type !== "tool-result" || part.toolName !== "send") continue;
+        const output = typeof part.output === "object" && part.output !== null && "value" in part.output ? part.output.value : undefined;
+        if (typeof output === "object" && output !== null && "ok" in output && output.ok === true) return { continue: false };
+      }
+    }
+    return undefined;
   },
 };
 
@@ -97,7 +103,7 @@ function toolResultsOf(prompt: LanguageModelV4CallOptions["prompt"]) {
 }
 
 describe("agent tool loop", () => {
-  it("ends the turn on an endTurn result and records it as JSON", async () => {
+  it("ends the turn after a successful send step", async () => {
     const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("should not run")]);
     const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })), plugins: [stopAfterSend] });
 
@@ -107,7 +113,7 @@ describe("agent tool loop", () => {
     expect(await toolOutputs(agent)).toEqual([{ type: "json", value: { ok: true, id: "m-1", body: "hi" } }]);
   });
 
-  it("keeps the turn going when a failed tool leaves endTurn false", async () => {
+  it("keeps the turn going when the send failed", async () => {
     const model = scriptedModel([toolStep("send", { body: "" }), textStep("retried")]);
     const agent = createAgent({
       model,
@@ -173,14 +179,14 @@ describe("agent tool loop", () => {
     expect(await toolOutputs(agent)).toEqual([{ type: "text", value: "seen:abc" }]);
   });
 
-  it("ends the turn when a called tool has no execute function", async () => {
-    const model = scriptedModel([toolStep("ghost", {}), textStep("should not run")]);
+  it("continues the turn when a called tool has no execute function", async () => {
+    const model = scriptedModel([toolStep("ghost", {}), textStep("reported")]);
     const tools: ToolSet = { ghost: { inputSchema: jsonSchema({ type: "object", properties: {} }) } };
     const agent = createAgent({ model, tools });
 
     const events = await runTurn(agent);
 
-    expect(model.doStreamCalls).toHaveLength(1);
+    expect(model.doStreamCalls).toHaveLength(2);
     expect(await toolOutputs(agent)).toEqual([{ type: "error-text", value: 'AgentRuntimeError: Tool "ghost" has no execute function' }]);
     expect(events.map((event) => event.type)).toContain("tool.failed");
   });

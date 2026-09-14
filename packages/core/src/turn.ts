@@ -24,10 +24,24 @@ export interface TurnStepResult {
   continue: boolean;
 }
 
+/** What a step boundary hands to plugins: the step's own result, plus where it sits in the turn. */
+export interface StepFinishInfo {
+  readonly turnId: string;
+  readonly stepNumber: number;
+  readonly result: TurnStepResult;
+}
+
+/** A plugin's step-level decision. Omitted fields keep the core default. */
+export interface StepFinishDecision {
+  continue?: boolean;
+}
+
 export interface TurnQueueOptions {
   maxSteps: number;
   runStep(request: TurnRequest, stepNumber: number, messages: AgentMessage[], allMessages: readonly AgentMessage[]): Promise<TurnStepResult>;
   emit(event: AgentEvent): Promise<void>;
+  /** Called once per step, after `drainJoined`, including the final step. The first plugin that returns a decision owns it. */
+  onStepFinish?(info: StepFinishInfo): StepFinishDecision | void | Promise<StepFinishDecision | void>;
   onTurnFinish?(result: TurnResult): Promise<void> | void;
 }
 
@@ -161,7 +175,8 @@ export class AgentQueue {
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
 
         const drained = await request.drainJoined();
-        if (!result.continue) break;
+        const decision = await this.options.onStepFinish?.({ turnId: request.turnId, stepNumber, result });
+        if (!(decision?.continue ?? result.continue)) break;
         stepNumber += 1;
         incoming = drained;
         allMessages.push(...drained);

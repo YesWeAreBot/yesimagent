@@ -21,17 +21,11 @@ export type ToolDecision = { type: "allow" } | { type: "block"; reason: string }
 export interface ToolResultInfo extends ToolCallInfo {
   result: unknown;
   isError: boolean;
-  /**
-   * Ends the turn after this step once every executed call in the step asks for it. Plugins set it in
-   * `afterToolCall`; the default is `false`, so a step continues while any executed call leaves it false.
-   */
-  endTurn: boolean;
 }
 
 export interface ToolExecutionResult {
   result: unknown;
   isError: boolean;
-  endTurn: boolean;
 }
 
 export interface AgentToolRuntime {
@@ -92,14 +86,15 @@ export async function executeAgentTool(
   if (!tool?.execute) {
     const error = new AgentRuntimeError(`Tool "${name}" has no execute function`);
     await runtime.emit({ type: "tool.failed", turnId: runtime.turnId, toolName: name, toolCallId, args: input, error: serializeError(error) });
-    return { result: error, isError: true, endTurn: true };
+    // The call still records an error result; whether the turn continues is an `onStepFinish` decision.
+    return { result: error, isError: true };
   }
 
   const call = { toolCallId, toolName: name, args: input };
   const decision = (await runtime.beforeToolCall?.({ type: "allow" }, call)) ?? { type: "allow" };
   if (decision.type === "block") {
     await runtime.emit({ type: "tool.blocked", turnId: runtime.turnId, toolName: name, toolCallId, reason: decision.reason });
-    return { result: { blocked: true, reason: decision.reason }, isError: false, endTurn: false };
+    return { result: { blocked: true, reason: decision.reason }, isError: false };
   }
 
   const nextInput = decision.type === "replace" ? decision.args : input;
@@ -115,15 +110,15 @@ export async function executeAgentTool(
       ),
       runtime.signal,
     );
-    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result, isError: false, endTurn: false };
+    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result, isError: false };
     const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
     await runtime.emit({ type: "tool.done", turnId: runtime.turnId, toolName: name, toolCallId, result: transformed.result });
-    return { result: transformed.result, isError: transformed.isError, endTurn: transformed.endTurn };
+    return { result: transformed.result, isError: transformed.isError };
   } catch (error) {
     // An aborted turn is not a tool error: it must keep travelling as an abort.
     if (runtime.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
 
-    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result: error, isError: true, endTurn: false };
+    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result: error, isError: true };
     const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
     await runtime.emit({
       type: "tool.failed",
@@ -133,7 +128,7 @@ export async function executeAgentTool(
       args: nextInput,
       error: serializeError(transformed.result),
     });
-    return { result: transformed.result, isError: transformed.isError, endTurn: transformed.endTurn };
+    return { result: transformed.result, isError: transformed.isError };
   }
 }
 
