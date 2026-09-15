@@ -1,4 +1,4 @@
-import type { LanguageModelUsage } from "ai";
+import type { FinishReason, LanguageModelUsage } from "ai";
 
 import { AgentBusyError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
@@ -20,7 +20,7 @@ export interface TurnRequest {
 export interface TurnStepResult {
   messages: AgentMessage[];
   usage?: Partial<LanguageModelUsage>;
-  finishReason?: string;
+  finishReason?: FinishReason;
   continue: boolean;
 }
 

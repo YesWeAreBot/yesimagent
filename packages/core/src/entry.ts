@@ -21,9 +21,9 @@ export interface CreateEntryOptions {
 
 export function createEntry<T extends keyof AgentCustomEntry>(type: T, data: AgentCustomEntry[T], options: CreateEntryOptions = {}): AgentEntry<T> {
   return {
+    id: options.id ?? crypto.randomUUID(),
     type,
     data,
-    id: options.id ?? crypto.randomUUID(),
     timestamp: options.timestamp ?? Date.now(),
     ...(options.parentId === undefined ? {} : { parentId: options.parentId }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),

@@ -2,7 +2,7 @@ import type { LanguageModelCallOptions, ModelMessage, ToolChoice, ToolSet } from
 
 import type { Agent } from "./agent.js";
 import type { AgentEntry } from "./entry.js";
-import type { AgentMessage } from "./message.js";
+import type { AgentCustomMessage, AgentMessage } from "./message.js";
 import type { ToolCallInfo, ToolDecision, ToolResultInfo } from "./tools.js";
 import type { StepFinishDecision, StepFinishInfo, TurnResult } from "./turn.js";
 
@@ -27,20 +27,20 @@ export interface StepOptions extends TurnOptions {
   readonly settings?: LanguageModelCallOptions;
 }
 
-export interface AgentPlugin {
+export interface AgentPlugin extends Partial<AgentHooks> {
   name: string;
   enforce?: "pre" | "post";
   init?(agent: Agent): Awaitable<void>;
   stop?(): Awaitable<void>;
   extendTools?(): Awaitable<ToolSet | void>;
   extendInstructions?(): Awaitable<string | void>;
-  onAppend?(entries: AgentEntry[]): Awaitable<AgentEntry[]>;
-  transformEntries?(entries: readonly AgentEntry[], options: TurnOptions): Awaitable<readonly AgentEntry[]>;
-  transformMessages?(messages: AgentMessage[], options: TurnOptions): Awaitable<AgentMessage[]>;
-  toModelMessages?(message: AgentMessage): ModelMessage[] | undefined;
-  prepareStep?(options: StepOptions): Awaitable<StepOptions>;
-  beforeToolCall?(decision: ToolDecision, call: ToolCallInfo): Awaitable<ToolDecision>;
-  afterToolCall?(result: ToolResultInfo): Awaitable<ToolResultInfo>;
+  // onAppend?(entries: AgentEntry[]): Awaitable<AgentEntry[]>;
+  // transformEntries?(entries: readonly AgentEntry[], options: TurnOptions): Awaitable<readonly AgentEntry[]>;
+  // transformMessages?(messages: AgentMessage[], options: TurnOptions): Awaitable<AgentMessage[]>;
+  // toModelMessages?(message: AgentCustomMessage[keyof AgentCustomMessage]): ModelMessage[] | undefined;
+  // prepareStep?(options: StepOptions): Awaitable<StepOptions>;
+  // beforeToolCall?(decision: ToolDecision, call: ToolCallInfo): Awaitable<ToolDecision>;
+  // afterToolCall?(result: ToolResultInfo): Awaitable<ToolResultInfo>;
   /**
    * Called once per step, at the step boundary, after joined messages are persisted. Returning a
    * decision ends or continues the turn; a plugin that throws is treated as having no opinion.
@@ -101,13 +101,13 @@ export function chainPipe<T, A extends readonly unknown[]>(
 }
 
 export interface AgentHooks {
-  onAppend?: (entries: AgentEntry[]) => Promise<AgentEntry[]>;
-  transformEntries?: (entries: readonly AgentEntry[], options: TurnOptions) => Promise<readonly AgentEntry[]>;
-  transformMessages?: (messages: AgentMessage[], options: TurnOptions) => Promise<AgentMessage[]>;
-  toModelMessages?: (message: AgentMessage) => Awaitable<ModelMessage[] | undefined>;
-  prepareStep?: (options: StepOptions) => Promise<StepOptions>;
-  beforeToolCall?: (decision: ToolDecision, call: ToolCallInfo) => Promise<ToolDecision>;
-  afterToolCall?: (result: ToolResultInfo) => Promise<ToolResultInfo>;
+  onAppend?: (entries: AgentEntry[]) => Awaitable<AgentEntry[]>;
+  transformEntries?: (entries: readonly AgentEntry[], options: TurnOptions) => Awaitable<readonly AgentEntry[]>;
+  transformMessages?: (messages: AgentMessage[], options: TurnOptions) => Awaitable<AgentMessage[]>;
+  toModelMessages?: (message: AgentCustomMessage[keyof AgentCustomMessage]) => Awaitable<ModelMessage[] | undefined>;
+  prepareStep?: (options: StepOptions) => Awaitable<StepOptions>;
+  beforeToolCall?: (decision: ToolDecision, call: ToolCallInfo) => Awaitable<ToolDecision>;
+  afterToolCall?: (result: ToolResultInfo) => Awaitable<ToolResultInfo>;
 }
 
 export function createAgentHooks(plugins: readonly AgentPlugin[]): AgentHooks {
@@ -115,7 +115,7 @@ export function createAgentHooks(plugins: readonly AgentPlugin[]): AgentHooks {
     onAppend: chainPipe<AgentEntry[], []>(plugins.map((plugin) => plugin.onAppend)),
     transformEntries: chainPipe<readonly AgentEntry[], [TurnOptions]>(plugins.map((plugin) => plugin.transformEntries)),
     transformMessages: chainPipe<AgentMessage[], [TurnOptions]>(plugins.map((plugin) => plugin.transformMessages)),
-    toModelMessages: chainFirst<[AgentMessage], ModelMessage[]>(plugins.map((plugin) => plugin.toModelMessages)),
+    toModelMessages: chainFirst<[AgentCustomMessage[keyof AgentCustomMessage]], ModelMessage[]>(plugins.map((plugin) => plugin.toModelMessages)),
     prepareStep: chainPipe<StepOptions, []>(plugins.map((plugin) => plugin.prepareStep)),
     beforeToolCall: chainPipe<ToolDecision, [ToolCallInfo]>(plugins.map((plugin) => plugin.beforeToolCall)),
     afterToolCall: chainPipe<ToolResultInfo, []>(plugins.map((plugin) => plugin.afterToolCall)),

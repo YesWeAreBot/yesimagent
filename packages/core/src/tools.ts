@@ -7,6 +7,7 @@ import type { AgentEntry } from "./entry.js";
 import { AgentRuntimeError, ToolConflictError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
 import type { AgentMessage } from "./message.js";
+import type { Awaitable } from "./plugin.js";
 import type { AgentStateManager } from "./state.js";
 import type { AgentStorage } from "./storage.js";
 
@@ -36,9 +37,9 @@ export interface AgentToolRuntime {
   readonly turnId: string;
   readonly signal: AbortSignal;
   readonly messages: readonly AgentMessage[];
-  readonly beforeToolCall?: (decision: ToolDecision, call: ToolCallInfo) => Promise<ToolDecision>;
-  readonly afterToolCall?: (result: ToolResultInfo) => Promise<ToolResultInfo>;
-  readonly emit: (event: AgentEvent) => Promise<void>;
+  readonly beforeToolCall?: (decision: ToolDecision, call: ToolCallInfo) => Awaitable<ToolDecision>;
+  readonly afterToolCall?: (result: ToolResultInfo) => Awaitable<ToolResultInfo>;
+  readonly emit: (event: AgentEvent) => Awaitable<void>;
 }
 
 export function mergeTools(...toolSets: readonly ToolSet[]): ToolSet {
