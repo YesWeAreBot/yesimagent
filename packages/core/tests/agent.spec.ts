@@ -191,24 +191,76 @@ describe("agent tool loop", () => {
     expect(events.map((event) => event.type)).toContain("tool.failed");
   });
 
-  it("retries a step with auto tool choice when an enforced choice is ignored", async () => {
-    const model = scriptedModel([textStep("plain text"), textStep("plain text again")]);
-    const agent = createAgent({ model, toolChoice: "required", toolChoiceViolation: "fallback" });
-
-    const events = await runTurn(agent);
-
-    expect(model.doStreamCalls).toHaveLength(2);
-    expect(model.doStreamCalls[0].toolChoice).toEqual({ type: "required" });
-    expect(model.doStreamCalls[1].toolChoice).toEqual({ type: "auto" });
-    expect(events.map((event) => event.type)).not.toContain("turn.failed");
-  });
-
-  it("fails the turn when an enforced tool choice is ignored and no fallback is configured", async () => {
+  it("fails the turn when an enforced tool choice is ignored", async () => {
     const model = scriptedModel([textStep("plain text")]);
     const agent = createAgent({ model, toolChoice: "required" });
 
     const events = await runTurn(agent);
 
     expect(events.map((event) => event.type)).toContain("turn.failed");
+  });
+
+  it("carries a prepareStep runtimeContext through the turn and restarts from the config on the next one", async () => {
+    const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("done"), textStep("next turn")]);
+    const seen: unknown[] = [];
+    const plugin: AgentPlugin = {
+      name: "runtime-context",
+      prepareStep(step) {
+        seen.push(step.runtimeContext.marker);
+        return { ...step, runtimeContext: { marker: `step ${step.stepNumber}` } };
+      },
+    };
+    const agent = createAgent({
+      model,
+      tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })),
+      runtimeContext: { marker: "config" },
+      plugins: [plugin],
+    });
+
+    await runTurn(agent);
+    await runTurn(agent);
+
+    expect(seen).toEqual(["config", "step 0", "config"]);
+  });
+
+  it("picks up a plugin's changed tools on the next turn without a refresh call", async () => {
+    const model = scriptedModel([textStep("first"), textStep("second")]);
+    const probe = { description: "probe", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" };
+    const late = { description: "late", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" };
+    let extended = false;
+    const plugin: AgentPlugin = {
+      name: "dynamic-prompt",
+      extendTools: () => (extended ? { probe, late } : { probe }),
+    };
+    const agent = createAgent({ model, plugins: [plugin] });
+
+    await runTurn(agent);
+    extended = true;
+    await runTurn(agent);
+
+    expect(model.doStreamCalls.map((call) => call.tools?.map((tool) => tool.name))).toEqual([["probe"], ["probe", "late"]]);
+  });
+
+  it("assembles the prompt once per turn, not once per step", async () => {
+    const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("done")]);
+    let assemblies = 0;
+    const agent = createAgent({
+      model,
+      tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })),
+      plugins: [
+        {
+          name: "counting",
+          extendTools: () => {
+            assemblies += 1;
+            return {};
+          },
+        },
+      ],
+    });
+
+    await runTurn(agent);
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(assemblies).toBe(1);
   });
 });

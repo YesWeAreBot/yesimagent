@@ -9,7 +9,6 @@ export interface AgentCustomEvent {
 export type AgentEvent =
   | AgentInitEvent
   | AgentStopEvent
-  | AgentPromptAssembleEvent
   | TurnQueuedEvent
   | TurnStartEvent
   | TurnStepEvent
@@ -29,10 +28,6 @@ export interface AgentInitEvent {
 
 export interface AgentStopEvent {
   type: "agent.stop";
-}
-
-export interface AgentPromptAssembleEvent {
-  type: "agent.prompt_assemble";
 }
 
 export interface TurnQueuedEvent {

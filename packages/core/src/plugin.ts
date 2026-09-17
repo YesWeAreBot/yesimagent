@@ -17,6 +17,13 @@ export interface StepOptions extends TurnOptions {
   readonly stepNumber: number;
   readonly messages: readonly ModelMessage[];
   /**
+   * Host state shared by every step of the turn, handed to the model call as the AI SDK's
+   * `runtimeContext`. Hooks and SDK callbacks read it; tools cannot — publish what a tool needs
+   * through `toolsContext`. A `prepareStep` that returns a different object changes it for the rest
+   * of the turn.
+   */
+  readonly runtimeContext: Record<string, unknown>;
+  /**
    * Tool context keyed by tool name, validated against each tool's `contextSchema` when it declares one.
    * A `prepareStep` that returns a different map changes it for the rest of the turn.
    */

@@ -1,15 +1,8 @@
-import { getErrorMessage, type JSONValue } from "@ai-sdk/provider";
-import { validateTypes, type ToolResultOutput } from "@ai-sdk/provider-utils";
-import type { Tool, ToolExecutionOptions, ToolSet } from "ai";
+import type { Tool, ToolExecutionOptions } from "ai";
 
-import type { AgentChannel } from "./channel.js";
-import type { AgentEntry } from "./entry.js";
-import { AgentRuntimeError, ToolConflictError } from "./errors.js";
+import { AgentRuntimeError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
-import type { AgentMessage } from "./message.js";
 import type { Awaitable } from "./plugin.js";
-import type { AgentStateManager } from "./state.js";
-import type { AgentStorage } from "./storage.js";
 
 export interface ToolCallInfo {
   toolCallId: string;
@@ -24,103 +17,59 @@ export interface ToolResultInfo extends ToolCallInfo {
   isError: boolean;
 }
 
-export interface ToolExecutionResult {
-  result: unknown;
-  isError: boolean;
-}
-
-export interface AgentToolRuntime {
-  readonly agentId: string;
-  readonly channel: AgentChannel;
-  readonly state: AgentStateManager;
-  readonly storage: AgentStorage<AgentEntry>;
+/** What one step's tool calls run against: the plugins' hooks, the turn's events, and its abort signal. */
+export interface ToolCallRuntime {
   readonly turnId: string;
   readonly signal: AbortSignal;
-  readonly messages: readonly AgentMessage[];
+  readonly emit: (event: AgentEvent) => Awaitable<void>;
   readonly beforeToolCall?: (decision: ToolDecision, call: ToolCallInfo) => Awaitable<ToolDecision>;
   readonly afterToolCall?: (result: ToolResultInfo) => Awaitable<ToolResultInfo>;
-  readonly emit: (event: AgentEvent) => Awaitable<void>;
-}
-
-export function mergeTools(...toolSets: readonly ToolSet[]): ToolSet {
-  const merged: ToolSet = {};
-
-  for (const tools of toolSets) {
-    for (const [name, tool] of Object.entries(tools)) {
-      if (name in merged) {
-        throw new ToolConflictError(name);
-      }
-      merged[name] = tool;
-    }
-  }
-
-  return merged;
 }
 
 /**
- * Strips `execute` so the AI SDK returns tool calls instead of running them, and resolves description
- * functions against the step's tool context — the definition handed to the model carries a string.
+ * Runs one wrapped tool call: the plugins' decision and result hooks, the `tool.*` events, then the tool
+ * itself. Execution stays with the AI SDK around this call — it validates input and context, resolves
+ * description functions, applies `toModelOutput`, and turns a throw into an `error-text` result.
+ *
+ * A tool with no `execute` keeps the same behaviour: the call records an error result and the step goes on.
  */
-export function toolDefinitions(tools: ToolSet, toolsContext: Record<string, unknown> = {}): ToolSet {
-  const definitions: ToolSet = {};
-
-  for (const [name, tool] of Object.entries(tools)) {
-    const { execute: _execute, ...definition } = tool;
-    definitions[name] = (
-      typeof definition.description === "function"
-        ? { ...definition, description: definition.description({ context: toolsContext[name], experimental_sandbox: undefined }) }
-        : definition
-    ) as Tool;
-  }
-
-  return definitions;
-}
-
-export async function executeAgentTool(
+export async function runTool(
   name: string,
   tool: Tool | undefined,
   input: unknown,
   options: ToolExecutionOptions<unknown>,
-  runtime: AgentToolRuntime,
-): Promise<ToolExecutionResult> {
+  runtime: ToolCallRuntime,
+): Promise<unknown> {
   const toolCallId = options.toolCallId;
-  if (!tool?.execute) {
+  if (tool?.execute === undefined) {
     const error = new AgentRuntimeError(`Tool "${name}" has no execute function`);
     await runtime.emit({ type: "tool.failed", turnId: runtime.turnId, toolName: name, toolCallId, args: input, error: serializeError(error) });
-    // The call still records an error result; whether the turn continues is an `onStepFinish` decision.
-    return { result: error, isError: true };
+    throw error;
   }
+  const execute = tool.execute;
 
   const call = { toolCallId, toolName: name, args: input };
   const decision = (await runtime.beforeToolCall?.({ type: "allow" }, call)) ?? { type: "allow" };
   if (decision.type === "block") {
     await runtime.emit({ type: "tool.blocked", turnId: runtime.turnId, toolName: name, toolCallId, reason: decision.reason });
-    return { result: { blocked: true, reason: decision.reason }, isError: false };
+    return { blocked: true, reason: decision.reason };
   }
 
   const nextInput = decision.type === "replace" ? decision.args : input;
   await runtime.emit({ type: "tool.start", turnId: runtime.turnId, toolName: name, toolCallId, args: nextInput });
 
+  let outcome: ToolResultInfo;
   try {
-    const result = await raceAbort(
-      Promise.resolve(
-        tool.execute(nextInput, {
-          ...options,
-          abortSignal: runtime.signal,
-        }),
-      ),
-      runtime.signal,
-    );
-    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result, isError: false };
-    const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
-    await runtime.emit({ type: "tool.done", turnId: runtime.turnId, toolName: name, toolCallId, result: transformed.result });
-    return { result: transformed.result, isError: transformed.isError };
+    const result = await raceAbort(Promise.resolve(execute.call(tool, nextInput, options)), runtime.signal);
+    outcome = { toolCallId, toolName: name, args: nextInput, result, isError: false };
   } catch (error) {
     // An aborted turn is not a tool error: it must keep travelling as an abort.
     if (runtime.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+    outcome = { toolCallId, toolName: name, args: nextInput, result: error, isError: true };
+  }
 
-    const outcome: ToolResultInfo = { toolCallId, toolName: name, args: nextInput, result: error, isError: true };
-    const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
+  const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
+  if (outcome.isError) {
     await runtime.emit({
       type: "tool.failed",
       turnId: runtime.turnId,
@@ -129,38 +78,13 @@ export async function executeAgentTool(
       args: nextInput,
       error: serializeError(transformed.result),
     });
-    return { result: transformed.result, isError: transformed.isError };
+  } else {
+    await runtime.emit({ type: "tool.done", turnId: runtime.turnId, toolName: name, toolCallId, result: transformed.result });
   }
-}
 
-/**
- * Validates a tool's context against its `contextSchema` when it declares one; otherwise the value is
- * passed through untouched.
- */
-export async function resolveToolContext(name: string, tool: Tool | undefined, provided: unknown): Promise<unknown> {
-  if (!tool?.contextSchema) return provided;
-  return validateTypes<unknown>({
-    value: provided,
-    schema: tool.contextSchema,
-    context: { field: "tool context", entityName: name },
-  });
-}
-
-/**
- * Converts a tool result into what the model reads: `toModelOutput` when the tool declares it, raw text
- * for strings, JSON otherwise. Errors always travel as `error-text`.
- */
-export async function toolResultOutput(
-  tool: Tool | undefined,
-  options: { toolCallId: string; input: unknown; output: unknown; isError?: boolean },
-): Promise<ToolResultOutput> {
-  if (options.isError) return { type: "error-text", value: getErrorMessage(options.output) };
-  if (tool?.toModelOutput) {
-    return tool.toModelOutput({ toolCallId: options.toolCallId, input: options.input, output: options.output });
-  }
-  return typeof options.output === "string"
-    ? { type: "text", value: options.output }
-    : { type: "json", value: options.output === undefined ? null : (options.output as JSONValue) };
+  // A throw reads back to the model as `error-text`; anything else travels as the tool's own model output.
+  if (transformed.isError) throw transformed.result;
+  return transformed.result;
 }
 
 function serializeError(error: unknown): { name: string; message: string; cause?: string } {

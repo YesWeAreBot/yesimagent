@@ -44,11 +44,11 @@ interface AgentConfig {
   model: LanguageModel; // any AI SDK LanguageModel, e.g. from @yesimagent/gateway
   instructions?: string; // system prompt, joined with plugin instructions
   tools?: ToolSet; // see Tools
+  runtimeContext?: Record<string, unknown>; // per-turn host state, see Tools
   toolsContext?: Record<string, unknown>; // per-tool context, see Tools
   toolChoice?: ToolChoice<ToolSet>; // per step; a prepareStep may override it
-  activeTools?: readonly string[]; // tools sent to the model per step; omit for all of them
+  activeTools?: readonly string[]; // only these tools are available per step; omit for all of them
   settings?: LanguageModelCallOptions; // sampling and limits for every step
-  toolChoiceViolation?: "fail" | "fallback"; // default "fail"; see Turns
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
   plugins?: readonly AgentPlugin[]; // see Plugins
   maxSteps?: number; // per turn, defaults to 20
@@ -63,15 +63,14 @@ Two ways to drive it:
 
 Lifecycle around turns:
 
-| Method               | Purpose                                                                         |
-| -------------------- | ------------------------------------------------------------------------------- |
-| `init()`             | Runs plugin `init` hooks and assembles the prompt; lazy on first turn.          |
-| `stop()`             | Interrupts the active turn, stops plugins in reverse order.                     |
-| `fresh()`            | Re-runs plugin `extendInstructions` / `extendTools` and reassembles the prompt. |
-| `wait(options?)`     | Resolves when the agent is idle; rejects if the optional signal aborts.         |
-| `interrupt(reason?)` | Aborts the active turn and everything queued.                                   |
-| `clear()`            | Clears storage.                                                                 |
-| `setModel(model)`    | Swaps the model; takes effect on the next step.                                 |
+| Method               | Purpose                                                                 |
+| -------------------- | ----------------------------------------------------------------------- |
+| `init()`             | Runs plugin `init` hooks; lazy on the first turn.                       |
+| `stop()`             | Interrupts the active turn, stops plugins in reverse order.             |
+| `wait(options?)`     | Resolves when the agent is idle; rejects if the optional signal aborts. |
+| `interrupt(reason?)` | Aborts the active turn and everything queued.                           |
+| `clear()`            | Clears storage.                                                         |
+| `setModel(model)`    | Swaps the model; takes effect on the next step.                         |
 
 ## Messages and entries
 
@@ -100,7 +99,7 @@ Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `c
 
 A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain. Whether a step ends the turn is a step-level decision: after the joined messages are persisted, `onStepFinish` runs and a returned `{ continue: false }` ends the turn even though tool calls were made. A step whose calls were all invalid keeps the turn going, so the model can repair its input.
 
-An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceViolationError` — or, with `toolChoiceViolation: "fallback"`, re-runs that step once with `toolChoice: "auto"`.
+An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceViolationError`.
 
 Turn events:
 
@@ -115,7 +114,7 @@ Turn events:
 
 ## Tools
 
-Tools are AI SDK tools. Core executes them itself and hands the model results as JSON:
+Tools are AI SDK tools. The AI SDK runs them inside the step and core records the result messages:
 
 ```ts
 import { tool } from "ai";
@@ -161,6 +160,22 @@ const sendMessage: FunctionTool<SendInput, SendOutput, SendMessageContext> = {
   execute: (input, { context }) => context.bot.sendMessage(input.channel, input.message),
 };
 ```
+
+### Runtime context
+
+`runtimeContext` is the turn's shared host state. It is handed to the model call as the AI SDK's `runtimeContext`, so lifecycle callbacks and telemetry see it there, and every plugin's `prepareStep` reads it from `StepOptions`. Tools never see it — publish what a tool needs through `toolsContext`:
+
+```ts
+const turn: AgentPlugin = {
+  name: "turn-state",
+  prepareStep(step) {
+    const seen = (step.runtimeContext.seen as string[] | undefined) ?? [];
+    return { ...step, runtimeContext: { seen: [...seen, step.turnId] } };
+  },
+};
+```
+
+A `prepareStep` that returns a different object changes it for the rest of the turn, exactly like `toolsContext`; the next turn starts again from `config.runtimeContext`. Treat the value as immutable and publish a new one instead of mutating in place.
 
 ### Ending the turn from a step
 
@@ -208,15 +223,17 @@ const memory: AgentPlugin = {
 
 The hook families:
 
-| Hooks                                                 | Run                                                                                                  |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `init` / `stop`                                       | Agent lifecycle. `init` failures roll back already-initialized plugins.                              |
-| `extendInstructions` / `extendTools`                  | Prompt assembly; each contributes a paragraph / a tool set.                                          |
-| `onAppend` / `transformEntries` / `transformMessages` | History pipeline, chained in plugin order; each hook's return feeds the next plugin.                 |
-| `toModelMessages`                                     | Projects custom messages into model messages; first non-`undefined` wins.                            |
-| `prepareStep`                                         | Rewrites the step (messages, toolsContext, toolChoice, activeTools, settings) before the model call. |
-| `beforeToolCall` / `afterToolCall`                    | Tool decisions and result transformation, including whether the result ends the turn.                |
-| `onTurnFinish`                                        | Observer after a turn completes; must not change the result.                                         |
+| Hooks                                                 | Run                                                                                                   |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `init` / `stop`                                       | Agent lifecycle. `init` failures roll back already-initialized plugins.                               |
+| `extendInstructions` / `extendTools`                  | Prompt assembly; each contributes a paragraph / a tool set. Run once per turn, before its first step. |
+| `onAppend` / `transformEntries` / `transformMessages` | History pipeline, chained in plugin order; each hook's return feeds the next plugin.                  |
+| `toModelMessages`                                     | Projects custom messages into model messages; first non-`undefined` wins.                             |
+| `prepareStep`                                         | Rewrites the step (messages, toolsContext, toolChoice, activeTools, settings) before the model call.  |
+| `beforeToolCall` / `afterToolCall`                    | Tool decisions and result transformation, including whether the result ends the turn.                 |
+| `onTurnFinish`                                        | Observer after a turn completes; must not change the result.                                          |
+
+Assembly runs once per turn, before its first step, so a plugin whose instructions or tools change owns that change: compute them once, hand back the cache from `extendInstructions` / `extendTools`, and refresh the cache when your own trigger fires. The agent itself has no refresh entry point, and a tool name contributed twice at the same assembly is a `ToolConflictError`.
 
 ## State
 

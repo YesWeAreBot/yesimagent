@@ -1,9 +1,9 @@
 import {
   streamText,
-  ToolChoiceViolationError,
   type LanguageModel,
   type LanguageModelCallOptions,
   type ModelMessage,
+  type Tool,
   type ToolChoice,
   type ToolContent,
   type ToolExecutionOptions,
@@ -12,12 +12,13 @@ import {
 
 import { AgentChannel } from "./channel.js";
 import { createEntry, type AgentEntry } from "./entry.js";
+import { ToolConflictError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
 import { createAssistantMessage, createToolMessage, type AgentMessage } from "./message.js";
 import { createAgentHooks, orderPlugins, type AgentPlugin, type StepOptions } from "./plugin.js";
 import { AgentStateManager, type AgentState } from "./state.js";
 import { createMemoryStorage, type AgentStorage } from "./storage.js";
-import { executeAgentTool, mergeTools, resolveToolContext, toolDefinitions, toolResultOutput } from "./tools.js";
+import { runTool, type ToolCallRuntime } from "./tools.js";
 import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type StepFinishDecision, type TurnRequest, type TurnStepResult } from "./turn.js";
 
 const DEFAULT_MAX_STEPS = 20;
@@ -33,17 +34,14 @@ export interface AgentConfig {
   model: LanguageModel;
   instructions?: string;
   tools?: ToolSet;
+  /** Host state shared by every step of a turn; a `prepareStep` may replace it for the rest of the turn. */
+  runtimeContext?: Record<string, unknown>;
   /** Tool context keyed by tool name; a `prepareStep` may change it for the rest of a turn. */
   toolsContext?: Record<string, unknown>;
   toolChoice?: ToolChoice<ToolSet>;
   activeTools?: readonly string[];
   /** Model call settings applied to every step; a `prepareStep` may override them per step. */
   settings?: LanguageModelCallOptions;
-  /**
-   * What to do when the model does not satisfy an enforced `toolChoice`:
-   * `"fail"` (default) fails the turn, `"fallback"` re-runs the step once with `toolChoice: "auto"`.
-   */
-  toolChoiceViolation?: "fail" | "fallback";
   storage?: AgentStorage<AgentEntry>;
   plugins?: readonly AgentPlugin[];
   maxSteps?: number;
@@ -57,8 +55,6 @@ export interface Agent {
   readonly state: AgentStateManager;
   init(): Promise<void>;
   stop(): Promise<void>;
-  /** Re-runs plugin `extendInstructions` / `extendTools` and reassembles the prompt. */
-  fresh(): Promise<void>;
   send(message: AgentMessage, options?: AgentSendOptions): string | undefined;
   run(message: AgentMessage, options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
   wait(options?: AgentWaitOptions): Promise<void>;
@@ -68,11 +64,6 @@ export interface Agent {
   clear(): Promise<void>;
   getActiveTurnId(): string | null;
   isIdle(): boolean;
-}
-
-interface AssembledPrompt {
-  instructions?: string;
-  tools: ToolSet;
 }
 
 export function createAgent(config: AgentConfig): Agent {
@@ -107,14 +98,17 @@ export function createAgent(config: AgentConfig): Agent {
   const plugins = orderPlugins(config.plugins ?? []);
   const hooks = createAgentHooks(plugins);
   const maxSteps = Math.max(1, config.maxSteps ?? DEFAULT_MAX_STEPS);
-  const toolChoiceViolation = config.toolChoiceViolation ?? "fail";
   const submittedEntries = new WeakMap<object, AgentEntry<"message">>();
   const turnBuffers = new Map<string, AgentEvent[]>();
   const turnListeners = new Map<string, Set<(event: AgentEvent) => void>>();
+  const turnRuntimeContexts = new Map<string, Record<string, unknown>>();
   const turnToolContexts = new Map<string, Record<string, unknown>>();
 
   let model = config.model;
-  let assembled: AssembledPrompt = { instructions: config.instructions, tools: { ...config.tools } };
+  // The model-visible parts a turn assembles, each on its own: the request also carries `activeTools`,
+  // `toolChoice` and `settings`, which stay step-scoped (`config` + `prepareStep`) rather than assembled.
+  let instructions = config.instructions;
+  let tools: ToolSet = { ...config.tools };
   let initialized = false;
   let initializing: Promise<void> | undefined;
   let stopping = false;
@@ -192,33 +186,35 @@ export function createAgent(config: AgentConfig): Agent {
   const streamStep = async (request: TurnRequest, options: StepOptions, stepTools: ToolSet, stepMessages: ModelMessage[]) => {
     const response = streamText({
       model,
-      instructions: assembled.instructions,
+      instructions,
       messages: stepMessages,
-      tools: toolDefinitions(stepTools, options.toolsContext),
+      tools: stepTools,
+      // A loose `ToolSet` types as declaring no tool context, so the SDK parameter is `never`. The map is
+      // still read per tool at runtime and each entry is validated against the tool's own `contextSchema`.
+      toolsContext: options.toolsContext as never,
+      runtimeContext: options.runtimeContext,
+      ...(options.activeTools === undefined ? {} : { activeTools: options.activeTools }),
       ...(options.toolChoice === undefined ? {} : { toolChoice: options.toolChoice }),
       ...options.settings,
       abortSignal: request.signal,
       maxRetries: 0,
     });
 
-    try {
-      for await (const part of response.fullStream) {
-        if (part.type === "error") throw part.error;
-      }
-    } catch (error) {
-      const enforced = options.toolChoice !== undefined && options.toolChoice !== "auto" && options.toolChoice !== "none";
-      if (toolChoiceViolation === "fallback" && enforced && ToolChoiceViolationError.isInstance(error)) {
-        return streamStep(request, { ...options, toolChoice: "auto" }, stepTools, stepMessages);
-      }
-      throw error;
+    // Draining the stream is what runs the step's tool calls; an `error` part has to surface as a failed turn.
+    for await (const part of response.fullStream) {
+      if (part.type === "error") throw part.error;
     }
 
     return response;
   };
 
-  const runStep = async (request: TurnRequest, stepNumber: number, incoming: AgentMessage[], allMessages: readonly AgentMessage[]): Promise<TurnStepResult> => {
+  const runStep = async (request: TurnRequest, stepNumber: number, incoming: AgentMessage[]): Promise<TurnStepResult> => {
     await ensureInit();
     if (incoming.length > 0) await persistMessages(incoming, request.turnId);
+    // The prompt is assembled here and nowhere else: once per turn, before the first step, so a plugin
+    // that caches its own instructions and tools decides when they change — the agent holds no
+    // refresh entry point.
+    if (stepNumber === 0) await assemblePrompt();
     throwIfAborted(request.signal);
 
     const collected = await collectModelMessages(request.turnId, request.signal);
@@ -227,21 +223,41 @@ export function createAgent(config: AgentConfig): Agent {
       signal: request.signal,
       stepNumber,
       messages: collected,
+      runtimeContext: turnRuntimeContexts.get(request.turnId) ?? config.runtimeContext ?? {},
       toolsContext: turnToolContexts.get(request.turnId) ?? config.toolsContext ?? {},
       ...(config.toolChoice === undefined ? {} : { toolChoice: config.toolChoice }),
       ...(config.activeTools === undefined ? {} : { activeTools: config.activeTools }),
       ...(config.settings === undefined ? {} : { settings: config.settings }),
     };
     const prepared = hooks.prepareStep ? await hooks.prepareStep(step) : step;
+    if (prepared.runtimeContext !== step.runtimeContext) turnRuntimeContexts.set(request.turnId, prepared.runtimeContext);
     if (prepared.toolsContext !== step.toolsContext) turnToolContexts.set(request.turnId, prepared.toolsContext);
 
     const messages = [...prepared.messages];
-    const stepTools = filterTools(assembled.tools, prepared.activeTools);
+    const toolRuntime: ToolCallRuntime = {
+      turnId: request.turnId,
+      signal: request.signal,
+      emit,
+      ...(hooks.beforeToolCall === undefined ? {} : { beforeToolCall: hooks.beforeToolCall }),
+      ...(hooks.afterToolCall === undefined ? {} : { afterToolCall: hooks.afterToolCall }),
+    };
+    // The step's tools wrap their own `execute` so the hooks and events above run inside the SDK's call,
+    // while the SDK keeps ownership of validation, model output and error handling.
+    const stepTools: ToolSet = {};
+    for (const [name, tool] of Object.entries(tools)) {
+      stepTools[name] = {
+        ...tool,
+        execute: (input: unknown, options: ToolExecutionOptions<unknown>) => runTool(name, tool, input, options, toolRuntime),
+      } as Tool;
+    }
+
     const response = await streamStep(request, prepared, stepTools, messages);
 
     const usage = await response.usage;
     const finishReason = await response.finishReason;
     const responseMessages = await response.responseMessages;
+    // An aborted step records nothing: the turn ends as aborted rather than as a half-written step.
+    throwIfAborted(request.signal);
     const assistantMessages = responseMessages
       .filter((message) => message.role === "assistant")
       .map((message) =>
@@ -264,45 +280,6 @@ export function createAgent(config: AgentConfig): Agent {
     }
 
     const toolCalls = await response.toolCalls;
-    for (const call of toolCalls) {
-      // Every call needs a result: a message history with an unresolved tool call is rejected by the SDK.
-      const tool = call.invalid ? undefined : stepTools[call.toolName];
-      const executionOptions: ToolExecutionOptions<unknown> = {
-        toolCallId: call.toolCallId,
-        messages: [...messages],
-        abortSignal: request.signal,
-        context: call.invalid ? undefined : await resolveToolContext(call.toolName, tool, prepared.toolsContext[call.toolName]),
-      };
-      const execution = call.invalid
-        ? { result: call.error, isError: true }
-        : await executeAgentTool(call.toolName, tool, call.input, executionOptions, {
-            agentId: id,
-            channel,
-            state,
-            storage,
-            turnId: request.turnId,
-            signal: request.signal,
-            messages: [...allMessages, ...outputMessages],
-            beforeToolCall: hooks.beforeToolCall,
-            afterToolCall: hooks.afterToolCall,
-            emit,
-          });
-
-      const toolMessage = createToolMessage([
-        {
-          type: "tool-result",
-          toolCallId: call.toolCallId,
-          toolName: call.toolName,
-          output: await toolResultOutput(tool, {
-            toolCallId: call.toolCallId,
-            input: call.input,
-            output: execution.result,
-            isError: execution.isError,
-          }),
-        },
-      ]);
-      outputMessages.push(...(await persistMessages([toolMessage], request.turnId)));
-    }
 
     return {
       messages: outputMessages,
@@ -330,6 +307,7 @@ export function createAgent(config: AgentConfig): Agent {
       return decision;
     },
     onTurnFinish: async (result) => {
+      turnRuntimeContexts.delete(result.turnId);
       turnToolContexts.delete(result.turnId);
       for (const plugin of plugins) {
         try {
@@ -347,14 +325,21 @@ export function createAgent(config: AgentConfig): Agent {
     for (const plugin of plugins) {
       const instructions = await plugin.extendInstructions?.();
       if (instructions) instructionParts.push(instructions);
-      const tools = await plugin.extendTools?.();
-      if (tools) pluginTools.push(tools);
+      const extended = await plugin.extendTools?.();
+      if (extended) pluginTools.push(extended);
     }
-    assembled = {
-      instructions: instructionParts.length === 0 ? undefined : instructionParts.join("\n\n"),
-      tools: mergeTools(config.tools ?? {}, ...pluginTools),
-    };
-    await emit({ type: "agent.prompt_assemble" });
+
+    const merged: ToolSet = { ...config.tools };
+    for (const extended of pluginTools) {
+      for (const [name, tool] of Object.entries(extended)) {
+        if (name in merged) throw new ToolConflictError(name);
+        merged[name] = tool;
+      }
+    }
+
+    // Both parts land together, so a turn never reads instructions assembled against other tools.
+    instructions = instructionParts.length === 0 ? undefined : instructionParts.join("\n\n");
+    tools = merged;
   };
 
   const ensureInit = (): Promise<void> => {
@@ -368,7 +353,6 @@ export function createAgent(config: AgentConfig): Agent {
           await plugin.init?.(agent);
           initializedPlugins.push(plugin);
         }
-        await assemblePrompt();
         initialized = true;
         await emit({ type: "agent.init" });
       } catch (error) {
@@ -452,10 +436,6 @@ export function createAgent(config: AgentConfig): Agent {
         stopping = false;
       }
     },
-    async fresh() {
-      await ensureInit();
-      await assemblePrompt();
-    },
     send(message, options = {}) {
       if (stopping) throw new Error("Agent is stopping");
       if (options.trigger === false) {
@@ -514,17 +494,6 @@ function toModelMessage(message: Exclude<AgentMessage, { role: "custom" }>): Mod
 
 function isMessageEntry(entry: AgentEntry): entry is AgentEntry<"message"> {
   return entry.type === "message";
-}
-
-function filterTools(tools: ToolSet, activeTools: readonly string[] | undefined): ToolSet {
-  if (!activeTools) return tools;
-
-  const filtered: ToolSet = {};
-  for (const name of activeTools) {
-    const tool = tools[name];
-    if (tool) filtered[name] = tool;
-  }
-  return filtered;
 }
 
 /**

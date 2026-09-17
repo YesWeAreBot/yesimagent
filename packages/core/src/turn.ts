@@ -38,7 +38,7 @@ export interface StepFinishDecision {
 
 export interface TurnQueueOptions {
   maxSteps: number;
-  runStep(request: TurnRequest, stepNumber: number, messages: AgentMessage[], allMessages: readonly AgentMessage[]): Promise<TurnStepResult>;
+  runStep(request: TurnRequest, stepNumber: number, messages: AgentMessage[]): Promise<TurnStepResult>;
   emit(event: AgentEvent): Promise<void>;
   /** Called once per step, after `drainJoined`, including the final step. The first plugin that returns a decision owns it. */
   onStepFinish?(info: StepFinishInfo): StepFinishDecision | void | Promise<StepFinishDecision | void>;
@@ -169,7 +169,7 @@ export class AgentQueue {
 
       while (stepNumber < this.options.maxSteps) {
         throwIfAborted(request.signal);
-        const result = await this.options.runStep(request, stepNumber, incoming, allMessages);
+        const result = await this.options.runStep(request, stepNumber, incoming);
         allMessages.push(...result.messages);
         usage = addUsage(usage, result.usage);
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
