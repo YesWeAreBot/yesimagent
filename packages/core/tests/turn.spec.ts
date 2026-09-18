@@ -4,7 +4,7 @@ import { createAssistantMessage, createUserMessage } from "../src/message.js";
 import { AgentQueue, type TurnResult } from "../src/turn.js";
 
 describe("AgentQueue", () => {
-  it("runs one model step at a time and accumulates usage", async () => {
+  it("runs one model step at a time and reports the last step's usage", async () => {
     const steps: number[] = [];
     const events: string[] = [];
     let result: TurnResult | undefined;
@@ -14,7 +14,7 @@ describe("AgentQueue", () => {
         steps.push(stepNumber);
         return {
           messages: [createAssistantMessage(`step-${stepNumber}`)],
-          usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+          usage: stepNumber === 0 ? { inputTokens: 1, outputTokens: 2, totalTokens: 3 } : { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
           finishReason: stepNumber === 1 ? "stop" : "tool-call",
           continue: stepNumber === 0,
         };
@@ -35,7 +35,7 @@ describe("AgentQueue", () => {
     expect(result).toMatchObject({
       turnId,
       status: "done",
-      usage: { inputTokens: 2, outputTokens: 4, totalTokens: 6 },
+      usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
     });
     expect(result?.messages).toHaveLength(3);
   });

@@ -108,7 +108,7 @@ Turn events:
 | `turn.queued`  | A message was deferred behind an active turn.                 |
 | `turn.start`   | The turn begins.                                              |
 | `turn.step`    | A step finished, with that step's `usage` and `finishReason`. |
-| `turn.done`    | The turn finished; accumulated `usage` included.              |
+| `turn.done`    | The turn finished; the last step's `usage` included.          |
 | `turn.failed`  | The model threw; `error` is `{ name, message, cause? }`.      |
 | `turn.aborted` | The turn was interrupted.                                     |
 

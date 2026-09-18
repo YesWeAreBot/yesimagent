@@ -171,7 +171,10 @@ export class AgentQueue {
         throwIfAborted(request.signal);
         const result = await this.options.runStep(request, stepNumber, incoming);
         allMessages.push(...result.messages);
-        usage = addUsage(usage, result.usage);
+        // The last step's usage passes through: every step re-sends the same growing prefix, so summing
+        // `inputTokens` across steps would count the context once per step. Per-step numbers stay visible
+        // in the `turn.step` events.
+        usage = result.usage;
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
 
         const drained = await request.drainJoined();
@@ -235,18 +238,6 @@ function createQueuedTurn(messages: AgentMessage[]): QueuedTurn {
     },
   };
   return { request, controller };
-}
-
-function addUsage(previous: Partial<LanguageModelUsage> | undefined, next: Partial<LanguageModelUsage> | undefined): Partial<LanguageModelUsage> | undefined {
-  if (!previous && !next) return undefined;
-  const result: Partial<LanguageModelUsage> = { ...previous, ...next };
-  const keys = ["inputTokens", "outputTokens", "totalTokens"] as const;
-  for (const key of keys) {
-    const left = previous?.[key];
-    const right = next?.[key];
-    if (typeof left === "number" || typeof right === "number") result[key] = (left ?? 0) + (right ?? 0);
-  }
-  return result;
 }
 
 function throwIfAborted(signal: AbortSignal): void {
