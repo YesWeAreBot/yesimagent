@@ -20,6 +20,6 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@yesimagent/core": "workspace:"
+    "@yesimagent/core": "workspace:*"
   }
 }

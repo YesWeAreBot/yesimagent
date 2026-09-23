@@ -26,9 +26,9 @@
     "@ai-sdk/openai-compatible": "3.0.47"
   },
   "devDependencies": {
-    "@yesimagent/core": "workspace:"
+    "@yesimagent/core": "workspace:*"
   },
   "peerDependencies": {
-    "@yesimagent/core": "workspace:"
+    "@yesimagent/core": "workspace:*"
   }
 }
