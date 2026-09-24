@@ -1,6 +1,6 @@
 {
   "name": "@yesimagent/root",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "license": "MIT",
   "workspaces": [
@@ -15,7 +15,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
-    "prepare": "husky",
+    "publish": "for p in packages/*/ packages-ext/*/; do npm publish \"$(cd \"$p\" && bun pm pack --destination \"$(mktemp -d)\" --quiet)\"; done",
     "test": "yakumo vitest"
   },
   "devDependencies": {
