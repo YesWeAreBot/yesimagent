@@ -6,15 +6,13 @@ export interface AgentMessageBase {
   timestamp: number;
 }
 
-export interface CustomMessage<T extends string = string, D = unknown> extends AgentMessageBase {
-  role: "custom";
-  type: T;
-  data: D;
+export interface AgentCustomMessage {
+  custom: unknown;
 }
 
-export interface AgentCustomMessage {
-  custom: CustomMessage<"custom", unknown>;
-}
+type CustomMessage<T extends keyof AgentCustomMessage = keyof AgentCustomMessage> = {
+  [K in T]: { role: "custom"; type: K; data: AgentCustomMessage[K] } & AgentMessageBase;
+}[T];
 
 export interface AgentUserMessage extends AgentMessageBase, UserModelMessage {}
 
@@ -27,7 +25,7 @@ export interface AgentAssistantMessage extends AgentMessageBase, AssistantModelM
 
 export interface AgentToolMessage extends AgentMessageBase, ToolModelMessage {}
 
-export type AgentMessage = AgentUserMessage | AgentSystemMessage | AgentAssistantMessage | AgentToolMessage | AgentCustomMessage[keyof AgentCustomMessage];
+export type AgentMessage = AgentUserMessage | AgentSystemMessage | AgentAssistantMessage | AgentToolMessage | CustomMessage;
 
 export interface CreateMessageOptions {
   id?: string;
@@ -57,10 +55,10 @@ export function createToolMessage(content: ToolContent, options: Omit<Partial<Ag
 
 export function createCustomMessage<T extends Extract<keyof AgentCustomMessage, string>>(
   type: T,
-  data: AgentCustomMessage[T] extends CustomMessage<infer U, infer V> ? V : never,
+  data: AgentCustomMessage[T],
   options: CreateMessageOptions = {},
-): AgentCustomMessage[T] {
-  return { ...createMessageBase(options), role: "custom", type, data } as AgentCustomMessage[T];
+): CustomMessage<T> {
+  return { ...createMessageBase(options), role: "custom", type, data };
 }
 
 function createMessageBase(options: CreateMessageOptions): AgentMessageBase {
