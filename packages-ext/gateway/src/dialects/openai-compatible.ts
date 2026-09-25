@@ -20,3 +20,5 @@ export const openaiCompletions: ApiFactory = (setup) =>
     headers: { ...setup.headers },
     fetch: setup.fetch,
   });
+
+export { createOpenAICompatible, type OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";

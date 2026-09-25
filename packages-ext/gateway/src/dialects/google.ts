@@ -16,3 +16,5 @@ export const googleGenerativeAi: ApiFactory = (setup) =>
     headers: { ...setup.headers },
     fetch: setup.fetch,
   });
+
+export { createGoogleGenerativeAI, type GoogleGenerativeAIProvider } from "@ai-sdk/google";

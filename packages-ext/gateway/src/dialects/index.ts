@@ -14,3 +14,8 @@ export const BUILTIN_APIS: Readonly<Record<string, ApiFactory>> = {
   "anthropic-messages": anthropicMessages,
   "google-generative-ai": googleGenerativeAi,
 };
+
+export * from "./anthropic.js";
+export * from "./google.js";
+export * from "./openai-compatible.js";
+export * from "./openai.js";

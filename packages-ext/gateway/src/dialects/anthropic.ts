@@ -17,3 +17,5 @@ export const anthropicMessages: ApiFactory = (setup) =>
     headers: { ...setup.headers },
     fetch: setup.fetch,
   });
+
+export { createAnthropic, type AnthropicProvider } from "@ai-sdk/anthropic";

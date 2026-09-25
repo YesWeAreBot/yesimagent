@@ -18,3 +18,5 @@ export const openaiResponses: ApiFactory = (setup) =>
     headers: { ...setup.headers },
     fetch: setup.fetch,
   });
+
+export { createOpenAI, type OpenAIProvider } from "@ai-sdk/openai";

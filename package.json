@@ -15,7 +15,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
-    "publish": "for p in packages/*/ packages-ext/*/; do npm publish \"$(cd \"$p\" && bun pm pack --destination \"$(mktemp -d)\" --quiet)\"; done",
+    "publish": "bun scripts/publish.ts",
     "test": "yakumo vitest"
   },
   "devDependencies": {
