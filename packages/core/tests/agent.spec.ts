@@ -98,6 +98,12 @@ async function toolOutputs(agent: Agent): Promise<unknown[]> {
     .flatMap((message) => message.content.flatMap((part) => (part.type === "tool-result" ? [part.output] : [])));
 }
 
+/** The role order of everything the agent has stored, the way a projection reads it back. */
+async function storedRoles(agent: Agent): Promise<string[]> {
+  const entries = await agent.storage.read();
+  return entries.flatMap((entry) => (entry.type === "message" ? [entry.data.role] : []));
+}
+
 function toolResultsOf(prompt: LanguageModelV4CallOptions["prompt"]) {
   return prompt.flatMap((message) => (message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : []));
 }
@@ -185,6 +191,25 @@ describe("agent tool loop", () => {
       { toolCallId: "call-9", toolName: "send", output: { type: "error-text", value: "Tool result was not recorded" } },
     ]);
     expect(events.map((event) => event.type)).toContain("tool.result_repaired");
+  });
+
+  it("keeps a step's tool result next to its call when a record-only write lands mid-step", async () => {
+    const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("done")]);
+    const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })) });
+
+    // A chat host records an inbound message the moment it arrives, so that write can run while the step
+    // is still being persisted. Firing it from the step's own append window is where the two collide.
+    let recorded = false;
+    agent.channel.subscribe("agent", (event) => {
+      if (recorded || event.type !== "message.appended" || event.message.role !== "assistant") return;
+      recorded = true;
+      agent.send(createUserMessage("inbound"), { trigger: false });
+    });
+
+    await runTurn(agent);
+
+    // The inbound message may land before or after the step, never between the call and its result.
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
   });
 
   it("hands a tool its context and honours toModelOutput", async () => {

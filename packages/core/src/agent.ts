@@ -299,13 +299,10 @@ export function createAgent(config: AgentConfig): Agent {
       .filter((message) => message.role === "tool")
       .map((message) => createToolMessage(message.content, { providerOptions: message.providerOptions }));
 
-    const outputMessages: AgentMessage[] = [];
-    if (assistantMessages.length > 0) {
-      outputMessages.push(...(await persistMessages(assistantMessages, request.turnId)));
-    }
-    if (returnedToolMessages.length > 0) {
-      outputMessages.push(...(await persistMessages(returnedToolMessages, request.turnId)));
-    }
+    // The step's messages go out in one append: a host write that lands mid-step may fall before or after
+    // the step, never between an assistant call and its result — the model history only stays valid if
+    // the two are adjacent.
+    const outputMessages = await persistMessages([...assistantMessages, ...returnedToolMessages], request.turnId);
 
     const toolCalls = await response.toolCalls;
 
