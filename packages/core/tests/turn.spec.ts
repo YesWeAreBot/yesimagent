@@ -15,7 +15,7 @@ describe("AgentQueue", () => {
         return {
           messages: [createAssistantMessage(`step-${stepNumber}`)],
           usage: stepNumber === 0 ? { inputTokens: 1, outputTokens: 2, totalTokens: 3 } : { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
-          finishReason: stepNumber === 1 ? "stop" : "tool-call",
+          finishReason: stepNumber === 1 ? "stop" : "tool-calls",
           continue: stepNumber === 0,
         };
       },

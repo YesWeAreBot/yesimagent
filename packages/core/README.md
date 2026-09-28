@@ -48,6 +48,7 @@ interface AgentConfig {
   toolsContext?: Record<string, unknown>; // per-tool context, see Tools
   toolChoice?: ToolChoice<ToolSet>; // per step; a prepareStep may override it
   activeTools?: readonly string[]; // only these tools are available per step; omit for all of them
+  toolCallers?: Experimental_ToolCallers<ToolSet>; // which caller tools may invoke each tool
   settings?: LanguageModelCallOptions; // sampling and limits for every step
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
   plugins?: readonly AgentPlugin[]; // see Plugins
@@ -176,6 +177,22 @@ const turn: AgentPlugin = {
 ```
 
 A `prepareStep` that returns a different object changes it for the rest of the turn, exactly like `toolsContext`; the next turn starts again from `config.runtimeContext`. Treat the value as immutable and publish a new one instead of mutating in place.
+
+### Caller tools
+
+A caller tool is a tool that calls other tools. The AI SDK's code mode is the built-in one: instead of calling each tool itself, the model writes a program, and that program reaches the host tools the SDK bound to it. `experimental_toolCallers` says who may call what:
+
+```ts
+const agent = createAgent({
+  model,
+  tools: { code_mode: codeModeTool(), send: sendMessage, search: searchTool },
+  experimental_toolCallers: { search: ["code_mode"], send: ["code_mode", DIRECT_TOOL_CALL] },
+});
+```
+
+`search` is reachable from generated code and hidden from the model; `send` is reachable from both. A tool with no entry is untouched, so the table only names what it takes away.
+
+A call from inside a program is a tool call like any other: it goes through the same wrapper, so it emits `tool.start` / `tool.done` and the `beforeToolCall` / `afterToolCall` hooks see it. Core keeps the caller's definition and the bound copy's execution wrapped on both sides, which is what makes that hold.
 
 ### Ending the turn from a step
 

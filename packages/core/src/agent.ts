@@ -1,4 +1,6 @@
+import { experimental_getToolCaller as getToolCaller } from "@ai-sdk/provider-utils";
 import {
+  experimental_toolCaller as toolCaller,
   streamText,
   type LanguageModel,
   type LanguageModelCallOptions,
@@ -40,6 +42,12 @@ export interface AgentConfig {
   toolsContext?: Record<string, unknown>;
   toolChoice?: ToolChoice<ToolSet>;
   activeTools?: readonly string[];
+  /**
+   * Which caller tools may invoke each tool, e.g. code mode: `{ query: ['code_mode'] }` lets a generated
+   * program call `query` while hiding it from the model's own tool list. A tool with no entry keeps its
+   * default direct callability, so the table only names what it takes away.
+   */
+  toolCallers?: ToolCallers;
   /** Model call settings applied to every step; a `prepareStep` may override them per step. */
   settings?: LanguageModelCallOptions;
   storage?: AgentStorage<AgentEntry>;
@@ -47,6 +55,13 @@ export interface AgentConfig {
   maxSteps?: number;
   initialState?: AgentState;
 }
+
+/**
+ * The caller table, loosened the same way `toolsContext` is: a bare `ToolSet` declares no caller tools,
+ * so the SDK's own parameter would collapse to the direct-call marker alone. Hosts build the set
+ * dynamically and name their caller tools as plain strings; the SDK still validates the table itself.
+ */
+export type ToolCallers = Record<string, readonly string[]>;
 
 export interface Agent {
   readonly id: string;
@@ -192,6 +207,9 @@ export function createAgent(config: AgentConfig): Agent {
       // A loose `ToolSet` types as declaring no tool context, so the SDK parameter is `never`. The map is
       // still read per tool at runtime and each entry is validated against the tool's own `contextSchema`.
       toolsContext: options.toolsContext as never,
+      // Same reason as the cast above: a loose `ToolSet` types as declaring no caller tool, so the SDK
+      // parameter would admit the direct-call marker only. The SDK validates every table itself.
+      experimental_toolCallers: config.toolCallers as never,
       runtimeContext: options.runtimeContext,
       ...(options.activeTools === undefined ? {} : { activeTools: options.activeTools }),
       ...(options.toolChoice === undefined ? {} : { toolChoice: options.toolChoice }),
@@ -243,12 +261,22 @@ export function createAgent(config: AgentConfig): Agent {
     };
     // The step's tools wrap their own `execute` so the hooks and events above run inside the SDK's call,
     // while the SDK keeps ownership of validation, model output and error handling.
+    // A caller tool's `experimental_toolCaller` is defined non-enumerable, so the spread below would drop
+    // it and the SDK would never bind its host tools — re-attach the definition around the wrapped tool.
+    // What `bind` produces is what the SDK runs in place of it, so that bound copy takes the wrap too:
+    // the caller is a tool call like any other, and the host tools it was bound already carry theirs.
     const stepTools: ToolSet = {};
-    for (const [name, tool] of Object.entries(tools)) {
-      stepTools[name] = {
+    const wrap = (name: string, tool: Tool): Tool => {
+      const wrapped: Tool = {
         ...tool,
         execute: (input: unknown, options: ToolExecutionOptions<unknown>) => runTool(name, tool, input, options, toolRuntime),
-      } as Tool;
+      };
+      const caller = getToolCaller(tool);
+      // Only a local caller runs here; a provider caller hands the call to the provider, keeping its options.
+      return caller?.type === "local" ? toolCaller(wrapped, { type: "local", bind: (host) => wrap(name, caller.bind(host)) }) : wrapped;
+    };
+    for (const [name, tool] of Object.entries(tools)) {
+      stepTools[name] = wrap(name, tool);
     }
 
     const response = await streamStep(request, prepared, stepTools, messages);

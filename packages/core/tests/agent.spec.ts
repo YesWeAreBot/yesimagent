@@ -1,6 +1,6 @@
 import type { LanguageModelV4CallOptions, LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { FunctionTool } from "@ai-sdk/provider-utils";
-import { jsonSchema, simulateReadableStream, type ToolExecuteFunction, type ToolSet } from "ai";
+import { experimental_toolCaller, type FunctionTool } from "@ai-sdk/provider-utils";
+import { jsonSchema, simulateReadableStream, type Tool, type ToolExecuteFunction, type ToolSet } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
@@ -100,6 +100,28 @@ async function toolOutputs(agent: Agent): Promise<unknown[]> {
 
 function toolResultsOf(prompt: LanguageModelV4CallOptions["prompt"]) {
   return prompt.flatMap((message) => (message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : []));
+}
+
+/**
+ * A local caller tool, the shape code mode contributes: it runs inside the SDK and reaches its host
+ * tools through `bind`. Hand-rolled here so core's tests carry no code-mode dependency.
+ */
+function callerTool(script: (host: ToolSet) => Promise<unknown>): Tool {
+  return experimental_toolCaller(
+    {
+      description: "Run a program over the tools it was granted.",
+      inputSchema: jsonSchema({ type: "object", properties: {}, required: [] }),
+      execute: async () => ({ ok: true, ran: "unbound" }),
+    },
+    {
+      type: "local",
+      bind: (host) => ({
+        description: "Run a program over the tools it was granted.",
+        inputSchema: jsonSchema({ type: "object", properties: {}, required: [] }),
+        execute: async () => ({ ok: true, ran: await script(host) }),
+      }),
+    },
+  );
 }
 
 describe("agent tool loop", () => {
@@ -225,12 +247,12 @@ describe("agent tool loop", () => {
 
   it("picks up a plugin's changed tools on the next turn without a refresh call", async () => {
     const model = scriptedModel([textStep("first"), textStep("second")]);
-    const probe = { description: "probe", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" };
-    const late = { description: "late", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" };
+    const probeTools: ToolSet = { probe: { description: "probe", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" } };
+    const lateTool: ToolSet = { late: { description: "late", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" } };
     let extended = false;
     const plugin: AgentPlugin = {
       name: "dynamic-prompt",
-      extendTools: () => (extended ? { probe, late } : { probe }),
+      extendTools: () => (extended ? { ...probeTools, ...lateTool } : probeTools),
     };
     const agent = createAgent({ model, plugins: [plugin] });
 
@@ -262,5 +284,41 @@ describe("agent tool loop", () => {
 
     expect(model.doStreamCalls).toHaveLength(2);
     expect(assemblies).toBe(1);
+  });
+
+  it("binds a caller tool's host tools, hiding them from the model", async () => {
+    const model = scriptedModel([toolStep("run", {}), textStep("done")]);
+    const agent = createAgent({
+      model,
+      tools: {
+        ...sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })),
+        run: callerTool(async (host) => (await host.send?.execute?.({ body: "hi" }, { toolCallId: "inner-1", messages: [], context: {} })) as unknown),
+      },
+      toolCallers: { send: ["run"] },
+    });
+
+    await runTurn(agent);
+
+    // The model never sees `send`; the program reached it anyway, through the binding the SDK does.
+    expect(model.doStreamCalls[0]?.tools?.map((tool) => tool.name)).toEqual(["run"]);
+    expect(await toolOutputs(agent)).toEqual([{ type: "json", value: { ok: true, ran: { ok: true, id: "m-1", body: "hi" } } }]);
+  });
+
+  it("runs a caller tool's nested calls through the tool events", async () => {
+    const model = scriptedModel([toolStep("run", {}), textStep("done")]);
+    const agent = createAgent({
+      model,
+      tools: {
+        ...sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })),
+        run: callerTool(async (host) => host.send?.execute?.({ body: "hi" }, { toolCallId: "inner-1", messages: [], context: {} })),
+      },
+      toolCallers: { send: ["run"] },
+    });
+    const events = await runTurn(agent);
+
+    // The wrapped execute, not the raw tool: a nested call is a real call and shows up as one.
+    expect(events.map((event) => event.type)).toContain("tool.start");
+    const started = events.filter((event) => event.type === "tool.start");
+    expect(started.map((event) => (event.type === "tool.start" ? event.toolName : ""))).toEqual(["run", "send"]);
   });
 });
