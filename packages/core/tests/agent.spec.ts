@@ -4,17 +4,7 @@ import { jsonSchema, simulateReadableStream, type Tool, type ToolExecuteFunction
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
-import {
-  createAgent,
-  createAssistantMessage,
-  createEntry,
-  createUserMessage,
-  type Agent,
-  type AgentEntry,
-  type AgentEvent,
-  type AgentMessage,
-  type AgentPlugin,
-} from "../src/index.js";
+import { createAgent, createUserMessage, type Agent, type AgentEntry, type AgentEvent, type AgentMessage, type AgentPlugin } from "../src/index.js";
 
 const USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
@@ -136,6 +126,7 @@ describe("agent tool loop", () => {
     const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })), plugins: [stopAfterSend] });
 
     await runTurn(agent);
+    await agent.wait();
 
     expect(model.doStreamCalls).toHaveLength(1);
     expect(await toolOutputs(agent)).toEqual([{ type: "json", value: { ok: true, id: "m-1", body: "hi" } }]);
@@ -150,6 +141,7 @@ describe("agent tool loop", () => {
     });
 
     await runTurn(agent);
+    await agent.wait();
 
     expect(model.doStreamCalls).toHaveLength(2);
     expect(await toolOutputs(agent)).toEqual([
@@ -177,22 +169,6 @@ describe("agent tool loop", () => {
     expect(events.map((event) => event.type)).toContain("turn.done");
   });
 
-  it("repairs a stored tool call that has no result", async () => {
-    const model = scriptedModel([textStep("continued")]);
-    const agent = createAgent({ model });
-    await agent.storage.append(
-      createEntry("message", createUserMessage("hello")),
-      createEntry("message", createAssistantMessage([{ type: "tool-call", toolCallId: "call-9", toolName: "send", input: {} }])),
-    );
-
-    const events = await runTurn(agent);
-
-    expect(toolResultsOf(model.doStreamCalls[0].prompt)).toMatchObject([
-      { toolCallId: "call-9", toolName: "send", output: { type: "error-text", value: "Tool result was not recorded" } },
-    ]);
-    expect(events.map((event) => event.type)).toContain("tool.result_repaired");
-  });
-
   it("keeps a step's tool result next to its call when a record-only write lands mid-step", async () => {
     const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("done")]);
     const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })) });
@@ -207,9 +183,132 @@ describe("agent tool loop", () => {
     });
 
     await runTurn(agent);
+    await agent.wait();
 
-    // The inbound message may land before or after the step, never between the call and its result.
-    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
+    // A record-only message received during the step waits for the whole turn, so it is not in step 1.
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "assistant", "user"]);
+    expect(JSON.stringify(model.doStreamCalls[1].prompt)).not.toContain("inbound");
+  });
+
+  it("keeps trigger-false join and defer messages on their promised boundaries", async () => {
+    const model = scriptedModel([toolStep("hold", {}), textStep("one")]);
+    let agent!: Agent;
+    agent = createAgent({
+      model,
+      tools: {
+        hold: {
+          description: "Hold the step open.",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => {
+            agent.send(createUserMessage("joined"), { ifBusy: "join", trigger: false });
+            agent.send(createUserMessage("deferred"), { ifBusy: "defer", trigger: false });
+            return { ok: true };
+          },
+        },
+      },
+    });
+
+    await runTurn(agent);
+    await agent.wait();
+
+    expect(JSON.stringify(model.doStreamCalls[1].prompt)).toContain("joined");
+    expect(JSON.stringify(model.doStreamCalls[1].prompt)).not.toContain("deferred");
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "assistant", "user"]);
+  });
+
+  it("flushes joined and deferred messages when the next step fails", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls > 1) throw new Error("provider down");
+        return { stream: simulateReadableStream({ chunks: toolStep("hold", {}) }) };
+      },
+    });
+    let agent!: Agent;
+    agent = createAgent({
+      model,
+      tools: {
+        hold: {
+          description: "Hold the step open.",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => {
+            agent.send(createUserMessage("joined"), { ifBusy: "join" });
+            agent.send(createUserMessage("deferred"), { trigger: false });
+            return { ok: true };
+          },
+        },
+      },
+    });
+
+    await runTurn(agent);
+    await agent.wait();
+
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "user"]);
+  });
+
+  it("hands sends from turn completion to the next safe boundary", async () => {
+    const model = scriptedModel([textStep("done"), textStep("next")]);
+    let agent!: Agent;
+    let sent = false;
+    agent = createAgent({
+      model,
+      plugins: [
+        {
+          name: "completion-sender",
+          init(next) {
+            agent = next;
+          },
+          onTurnFinish() {
+            if (sent) return;
+            sent = true;
+            agent.send(createUserMessage("record-only"), { trigger: false });
+            agent.send(createUserMessage("next-turn"));
+          },
+        },
+      ],
+    });
+
+    await runTurn(agent);
+    await agent.wait();
+
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "user", "user", "assistant"]);
+  });
+
+  it("lands a step's batch, then a joined message, then a deferred one after the turn", async () => {
+    const model = scriptedModel([toolStep("hold", {}), textStep("one"), textStep("deferred turn")]);
+    let agent!: Agent;
+    agent = createAgent({
+      model,
+      tools: {
+        hold: {
+          description: "Hold the step open.",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => {
+            agent.send(createUserMessage("joined"), { ifBusy: "join" });
+            agent.send(createUserMessage("deferred"));
+            return { ok: true };
+          },
+        },
+      },
+    });
+
+    for await (const event of agent.run(createUserMessage("hello"))) void event;
+    await agent.wait();
+
+    const entries = await agent.storage.read();
+    const shape = entries.flatMap((entry) => {
+      if (entry.type !== "message") return [];
+      const message = entry.data;
+      if (message.role !== "assistant") return [message.role];
+      if (typeof message.content === "string") return ["assistant:text"];
+      return message.content.flatMap((part) => (part.type === "text" ? ["assistant:text"] : [`assistant:${part.type}`]));
+    });
+
+    // The step's own messages go out together; a joined message lands after that batch, before the step
+    // that reads it; a deferred message only lands when its own turn starts, i.e. after the turn is over.
+    expect(shape).toEqual(["user", "assistant:tool-call", "tool", "user", "assistant:text", "user", "assistant:text"]);
+    expect(model.doStreamCalls).toHaveLength(3);
   });
 
   it("hands a tool its context and honours toModelOutput", async () => {

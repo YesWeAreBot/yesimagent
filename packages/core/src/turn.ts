@@ -12,9 +12,14 @@ export interface TurnRequest {
   readonly submittedAt: number;
   readonly messages: AgentMessage[];
   readonly signal: AbortSignal;
-  /** `persist` runs at the step boundary, not at the call site — see `drainJoined`. */
-  addJoined(messages: AgentMessage[], persist?: () => Promise<void>): void;
-  drainJoined(): Promise<AgentMessage[]>;
+  /** Messages are persisted after the current step's output batch. */
+  addJoined(messages: AgentMessage[]): void;
+  drainJoined(): AgentMessage[];
+  /** Messages are persisted after the active turn finishes. */
+  addDeferred(messages: AgentMessage[]): void;
+  drainDeferred(): AgentMessage[];
+  isAccepting(): boolean;
+  seal(): void;
 }
 
 export interface TurnStepResult {
@@ -40,6 +45,8 @@ export interface TurnQueueOptions {
   maxSteps: number;
   runStep(request: TurnRequest, stepNumber: number, messages: AgentMessage[]): Promise<TurnStepResult>;
   emit(event: AgentEvent): Promise<void>;
+  /** Persists messages at a safe step or turn boundary. */
+  flushMessages(messages: AgentMessage[], turnId: string): Promise<void>;
   /** Called once per step, after `drainJoined`, including the final step. The first plugin that returns a decision owns it. */
   onStepFinish?(info: StepFinishInfo): StepFinishDecision | void | Promise<StepFinishDecision | void>;
   onTurnFinish?(result: TurnResult): Promise<void> | void;
@@ -79,23 +86,32 @@ export class AgentQueue {
   constructor(private readonly options: TurnQueueOptions) {}
 
   get activeTurnId(): string | undefined {
-    return this.active?.request.turnId;
+    return this.active?.request.isAccepting() ? this.active.request.turnId : undefined;
   }
 
   isIdle(): boolean {
     return this.active === undefined && this.queue.length === 0 && !this.pumping;
   }
 
-  enqueue(messages: AgentMessage[], behavior: BusyBehavior = "defer", persistence?: () => Promise<void>): string {
-    if (this.active && behavior === "reject") throw new AgentBusyError();
+  addDeferredToActive(messages: AgentMessage[]): void {
+    if (!this.active || !this.active.request.isAccepting()) throw new Error("No active turn to add deferred messages to");
+    this.active.request.addDeferred(messages);
+  }
 
-    if (this.active && behavior === "join") {
-      this.active.request.addJoined(messages, persistence);
+  addJoinedToActive(messages: AgentMessage[]): void {
+    if (!this.active || !this.active.request.isAccepting()) throw new Error("No active turn to add joined messages to");
+    this.active.request.addJoined(messages);
+  }
+
+  enqueue(messages: AgentMessage[], behavior: BusyBehavior = "defer"): string {
+    if (this.active?.request.isAccepting() && behavior === "reject") throw new AgentBusyError();
+
+    if (this.active?.request.isAccepting() && behavior === "join") {
+      this.active.request.addJoined(messages);
       return this.active.request.turnId;
     }
 
     const turn = createQueuedTurn(messages);
-    if (persistence) turn.request.addJoined([], persistence);
     this.queue.push(turn);
     void this.pump();
     return turn.request.turnId;
@@ -161,6 +177,23 @@ export class AgentQueue {
     let usage: Partial<LanguageModelUsage> | undefined;
     let status: TurnResult["status"] = "done";
     let turnError: TurnError | undefined;
+    const flushJoined = async (): Promise<void> => {
+      while (true) {
+        const joined = request.drainJoined();
+        if (joined.length === 0) return;
+        await this.options.flushMessages(joined, request.turnId);
+        allMessages.push(...joined);
+      }
+    };
+    const flushTurnTail = async (): Promise<void> => {
+      while (true) {
+        await flushJoined();
+        const deferred = request.drainDeferred();
+        if (deferred.length === 0) return;
+        await this.options.flushMessages(deferred, request.turnId);
+        allMessages.push(...deferred);
+      }
+    };
 
     try {
       await this.options.emit({ type: "turn.start", turnId: request.turnId });
@@ -171,31 +204,44 @@ export class AgentQueue {
         throwIfAborted(request.signal);
         const result = await this.options.runStep(request, stepNumber, incoming);
         allMessages.push(...result.messages);
+
+        // Joined messages land after the complete step output and are visible to the next step.
+        await flushJoined();
+
         // The last step's usage passes through: every step re-sends the same growing prefix, so summing
         // `inputTokens` across steps would count the context once per step. Per-step numbers stay visible
         // in the `turn.step` events.
         usage = result.usage;
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
 
-        const drained = await request.drainJoined();
         const decision = await this.options.onStepFinish?.({ turnId: request.turnId, stepNumber, result });
+        await flushJoined();
         if (!(decision?.continue ?? result.continue)) break;
         stepNumber += 1;
-        incoming = drained;
-        allMessages.push(...drained);
+        incoming = [];
       }
 
+      await flushTurnTail();
+      request.seal();
       throwIfAborted(request.signal);
       if (request.signal.aborted) status = "aborted";
       await this.options.emit({ type: "turn.done", turnId: request.turnId, usage });
     } catch (error) {
       status = isAbortError(error) || request.signal.aborted ? "aborted" : "failed";
       turnError = serializeError(error);
+      try {
+        await flushTurnTail();
+      } catch {
+        // Suppressed: turn already failed, don't mask the original error
+      }
+      request.seal();
       await this.options.emit(
         status === "aborted"
           ? { type: "turn.aborted", turnId: request.turnId, reason: turnError.message }
           : { type: "turn.failed", turnId: request.turnId, error: turnError },
       );
+    } finally {
+      request.seal();
     }
 
     const result: TurnResult = {
@@ -221,20 +267,31 @@ export class AgentQueue {
 
 function createQueuedTurn(messages: AgentMessage[]): QueuedTurn {
   const controller = new AbortController();
+  const deferred: AgentMessage[] = [];
   const joined: AgentMessage[] = [];
-  const pending: Array<() => Promise<void>> = [];
+  let accepting = true;
   const request: TurnRequest = {
     turnId: crypto.randomUUID(),
     submittedAt: Date.now(),
     messages: [...messages],
     signal: controller.signal,
-    addJoined(nextMessages, persist) {
+    addJoined(nextMessages) {
       joined.push(...nextMessages);
-      if (persist) pending.push(persist);
     },
-    async drainJoined() {
-      await Promise.all(pending.splice(0).map((run) => run()));
+    drainJoined() {
       return joined.splice(0);
+    },
+    addDeferred(nextMessages) {
+      deferred.push(...nextMessages);
+    },
+    drainDeferred() {
+      return deferred.splice(0);
+    },
+    isAccepting() {
+      return accepting;
+    },
+    seal() {
+      accepting = false;
     },
   };
   return { request, controller };

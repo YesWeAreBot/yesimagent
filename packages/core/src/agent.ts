@@ -7,14 +7,13 @@ import {
   type ModelMessage,
   type Tool,
   type ToolChoice,
-  type ToolContent,
   type ToolExecutionOptions,
   type ToolSet,
 } from "ai";
 
 import { AgentChannel } from "./channel.js";
 import { createEntry, type AgentEntry } from "./entry.js";
-import { ToolConflictError } from "./errors.js";
+import { AgentBusyError, ToolConflictError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
 import { createAssistantMessage, createToolMessage, type AgentMessage } from "./message.js";
 import { createAgentHooks, orderPlugins, type AgentPlugin, type StepOptions } from "./plugin.js";
@@ -24,7 +23,6 @@ import { runTool, type ToolCallRuntime } from "./tools.js";
 import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type StepFinishDecision, type TurnRequest, type TurnStepResult } from "./turn.js";
 
 const DEFAULT_MAX_STEPS = 20;
-const MISSING_TOOL_RESULT = "Tool result was not recorded";
 
 export interface AgentSendOptions {
   ifBusy?: BusyBehavior;
@@ -190,12 +188,7 @@ export function createAgent(config: AgentConfig): Agent {
       }
       modelMessages.push(toModelMessage(message));
     }
-
-    const repaired = repairToolResults(modelMessages);
-    for (const call of repaired.missing) {
-      await emit({ type: "tool.result_repaired", turnId, toolName: call.toolName, toolCallId: call.toolCallId });
-    }
-    return repaired.messages;
+    return modelMessages;
   };
 
   const streamStep = async (request: TurnRequest, options: StepOptions, stepTools: ToolSet, stepMessages: ModelMessage[]) => {
@@ -307,7 +300,7 @@ export function createAgent(config: AgentConfig): Agent {
     const toolCalls = await response.toolCalls;
 
     return {
-      messages: outputMessages,
+      messages: outputMessages, // step output only; joined/pending drained by runTurn
       usage,
       finishReason,
       // Default: a step with tool calls continues (all-invalid ones too, so the model can repair its input). `onStepFinish` may override.
@@ -319,6 +312,10 @@ export function createAgent(config: AgentConfig): Agent {
     maxSteps,
     runStep,
     emit,
+    flushMessages: async (messages, turnId) => {
+      await ensureInit();
+      await persistMessages(messages, turnId);
+    },
     onStepFinish: async (info) => {
       let decision: StepFinishDecision | undefined;
       for (const plugin of plugins) {
@@ -463,20 +460,26 @@ export function createAgent(config: AgentConfig): Agent {
     },
     send(message, options = {}) {
       if (stopping) throw new Error("Agent is stopping");
+      const behavior = options.ifBusy ?? "defer";
+      const activeTurnId = queue.activeTurnId;
+      if (activeTurnId) {
+        if (options.trigger === false) {
+          if (behavior === "join") queue.addJoinedToActive([message]);
+          else queue.addDeferredToActive([message]);
+          return undefined;
+        }
+        if (behavior === "reject") throw new AgentBusyError();
+        if (behavior === "join") {
+          queue.addJoinedToActive([message]);
+          return activeTurnId;
+        }
+      }
       if (options.trigger === false) {
+        // No active turn: persist immediately since there is no boundary to batch with.
         void ensureInit().then(() => persistMessages([message]));
         return undefined;
       }
 
-      const behavior = options.ifBusy ?? "defer";
-      const activeTurnId = queue.activeTurnId;
-      if (behavior === "join" && activeTurnId) {
-        return queue.enqueue([message], "join", () =>
-          ensureInit()
-            .then(() => persistMessages([message], activeTurnId))
-            .then(() => undefined),
-        );
-      }
       const turnId = queue.enqueue([message], behavior);
       if (turnId !== activeTurnId) void emit({ type: "turn.queued", turnId });
       return turnId;
@@ -519,52 +522,6 @@ function toModelMessage(message: Exclude<AgentMessage, { role: "custom" }>): Mod
 
 function isMessageEntry(entry: AgentEntry): entry is AgentEntry<"message"> {
   return entry.type === "message";
-}
-
-/**
- * Fills in a result for every tool call the history left unresolved, inserting it before the message that
- * would otherwise make the history invalid. A model call rejects a history with a pending tool call.
- */
-function repairToolResults(messages: readonly ModelMessage[]): { messages: ModelMessage[]; missing: Array<{ toolCallId: string; toolName: string }> } {
-  const repaired: ModelMessage[] = [];
-  const missing: Array<{ toolCallId: string; toolName: string }> = [];
-  const pending = new Map<string, { toolCallId: string; toolName: string }>();
-
-  const flush = () => {
-    if (pending.size === 0) return;
-
-    const calls = [...pending.values()];
-    pending.clear();
-    missing.push(...calls);
-    const content: ToolContent = calls.map((call) => ({
-      type: "tool-result",
-      toolCallId: call.toolCallId,
-      toolName: call.toolName,
-      output: { type: "error-text", value: MISSING_TOOL_RESULT },
-    }));
-    repaired.push({ role: "tool", content });
-  };
-
-  for (const message of messages) {
-    if (message.role === "user" || message.role === "system") flush();
-    repaired.push(message);
-
-    if (message.role === "assistant") {
-      for (const part of message.content) {
-        if (typeof part === "string" || part.type !== "tool-call" || part.providerExecuted) continue;
-        pending.set(part.toolCallId, { toolCallId: part.toolCallId, toolName: part.toolName });
-      }
-      continue;
-    }
-    if (message.role === "tool") {
-      for (const part of message.content) {
-        if (part.type === "tool-result") pending.delete(part.toolCallId);
-      }
-    }
-  }
-  flush();
-
-  return { messages: repaired, missing };
 }
 
 function hasTurnId(event: AgentEvent): event is AgentEvent & { turnId: string } {

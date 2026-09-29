@@ -22,6 +22,7 @@ describe("AgentQueue", () => {
       async emit(event) {
         events.push(event.type);
       },
+      async flushMessages() {},
       onTurnFinish(value) {
         result = value;
       },
@@ -47,14 +48,15 @@ describe("AgentQueue", () => {
       async runStep(request, stepNumber) {
         log.push(`step:${stepNumber}`);
         if (stepNumber === 0) {
-          request.addJoined([createUserMessage("late")], async () => {
-            log.push("persist");
-          });
+          request.addJoined([createUserMessage("late")]);
           log.push("in-step");
         }
         return { messages: [], continue: stepNumber === 0 };
       },
       async emit() {},
+      async flushMessages() {
+        log.push("persist");
+      },
     });
 
     queue.enqueue([createUserMessage("first")]);
@@ -68,12 +70,13 @@ describe("AgentQueue", () => {
     const queue = new AgentQueue({
       maxSteps: 1,
       async runStep(request) {
-        request.addJoined([createUserMessage("late")], async () => {
-          log.push("persist");
-        });
+        request.addJoined([createUserMessage("late")]);
         return { messages: [], continue: false };
       },
       async emit() {},
+      async flushMessages() {
+        log.push("persist");
+      },
     });
 
     queue.enqueue([createUserMessage("first")]);
@@ -91,6 +94,7 @@ describe("AgentQueue", () => {
         return { messages: [], continue: true };
       },
       async emit() {},
+      async flushMessages() {},
       onStepFinish() {
         log.push("finish");
         return undefined;
@@ -112,6 +116,7 @@ describe("AgentQueue", () => {
         return { messages: [], continue: true };
       },
       async emit() {},
+      async flushMessages() {},
       onStepFinish() {
         return { continue: false };
       },
@@ -132,6 +137,7 @@ describe("AgentQueue", () => {
         return { messages: [], continue: false };
       },
       async emit() {},
+      async flushMessages() {},
       onStepFinish() {
         log.push("finish");
         return undefined;

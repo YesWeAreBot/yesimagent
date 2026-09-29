@@ -59,7 +59,7 @@ interface AgentConfig {
 
 Two ways to drive it:
 
-- `send(message, options?)` submits a turn and returns its id immediately. When a turn is already active, `options.ifBusy` decides: `"defer"` queues it (default), `"join"` attaches it to the active turn's current step, `"reject"` throws `AgentBusyError`. `options.trigger: false` persists the message without starting a turn.
+- `send(message, options?)` submits a turn and returns its id immediately. When a turn is already active, `options.ifBusy` decides: `"defer"` queues it (default), `"join"` attaches it to the active turn's next step, `"reject"` throws `AgentBusyError`. `options.trigger: false` records the message without starting a turn: an active `"join"` message is visible to the next step, while an active `"defer"` message is visible in the next turn.
 - `run(message)` submits a turn and returns an async iterable of that turn's events, closing after `turn.done`, `turn.failed`, or `turn.aborted`.
 
 Lifecycle around turns:
@@ -219,7 +219,7 @@ The first plugin to return a decision owns it; the rest still observe the same s
 
 Plugins can also intercept calls before they run: `beforeToolCall` may `allow`, `block` (with a reason), or `replace` the arguments, and `afterToolCall` can rewrite the result. Conflicting tool names across sources throw `ToolConflictError` at assembly.
 
-Tool events: `tool.start`, `tool.done`, `tool.failed`, `tool.blocked`, and `tool.result_repaired` — emitted for a tool call core had to fill a result in for, which happens when a stored history is missing one.
+Tool events: `tool.start`, `tool.done`, `tool.failed`, and `tool.blocked`.
 
 ## Plugins
 
