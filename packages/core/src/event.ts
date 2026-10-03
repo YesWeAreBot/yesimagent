@@ -1,9 +1,10 @@
-import type { LanguageModelUsage } from "ai";
+import type { LanguageModelUsage, TextStreamPart, ToolSet } from "ai";
 
 import type { AgentMessage } from "./message.js";
 
 export interface AgentCustomEvent {
   agent: AgentEvent;
+  stream: TextStreamPart<ToolSet>;
 }
 
 export type AgentEvent =

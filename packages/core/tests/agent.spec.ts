@@ -1,6 +1,6 @@
 import type { LanguageModelV4CallOptions, LanguageModelV4StreamPart, LanguageModelV4Usage } from "@ai-sdk/provider";
 import { experimental_toolCaller, type FunctionTool } from "@ai-sdk/provider-utils";
-import { jsonSchema, simulateReadableStream, type Tool, type ToolExecuteFunction, type ToolSet } from "ai";
+import { jsonSchema, simulateReadableStream, type TextStreamPart, type Tool, type ToolExecuteFunction, type ToolSet } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
@@ -444,5 +444,64 @@ describe("agent tool loop", () => {
     expect(events.map((event) => event.type)).toContain("tool.start");
     const started = events.filter((event) => event.type === "tool.start");
     expect(started.map((event) => (event.type === "tool.start" ? event.toolName : ""))).toEqual(["run", "send"]);
+  });
+});
+
+describe("stream channel", () => {
+  const probeTools: ToolSet = {
+    probe: { description: "Look at the phone.", inputSchema: jsonSchema({ type: "object", properties: {} }), execute: async () => "ok" },
+  };
+
+  it("forwards every model part of every step, in order", async () => {
+    const model = scriptedModel([toolStep("probe", {}), textStep("done")]);
+    const agent = createAgent({ model, tools: probeTools });
+    const parts: Array<TextStreamPart<ToolSet>> = [];
+    agent.channel.subscribe("stream", (part) => {
+      parts.push(part);
+    });
+
+    await runTurn(agent);
+
+    // The SDK's own frames are part of the contract: a host renders the stream `streamText` produces,
+    // not a re-summary of the finished step.
+    expect(parts.map((part) => part.type)).toEqual([
+      "start",
+      "start-step",
+      "tool-input-start",
+      "tool-input-delta",
+      "tool-input-end",
+      "tool-call",
+      "tool-result",
+      "finish-step",
+      "finish",
+      "start",
+      "start-step",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "finish-step",
+      "finish",
+    ]);
+    expect(parts.flatMap((part) => (part.type === "tool-call" ? [`${part.toolName}:${JSON.stringify(part.input)}`] : []))).toEqual(["probe:{}"]);
+    expect(parts.flatMap((part) => (part.type === "tool-result" ? [part.output] : []))).toEqual(["ok"]);
+    expect(parts.flatMap((part) => (part.type === "text-delta" ? [part.text] : []))).toEqual(["done"]);
+  });
+
+  it("delivers a step's parts while that step is still running, before it is stored", async () => {
+    const model = scriptedModel([textStep("hello")]);
+    const agent = createAgent({ model });
+    const assistantsStoredAtDelta: number[] = [];
+    agent.channel.subscribe("stream", async (part) => {
+      if (part.type !== "text-delta") return;
+      const entries = await agent.storage.read();
+      assistantsStoredAtDelta.push(entries.filter((entry) => entry.type === "message" && entry.data.role === "assistant").length);
+    });
+
+    const events = await runTurn(agent);
+
+    // The delta arrives mid-step, so the message it belongs to cannot be in storage yet.
+    expect(assistantsStoredAtDelta).toEqual([0]);
+    expect(events.map((event) => event.type)).toContain("turn.done");
+    expect(await storedRoles(agent)).toEqual(["user", "assistant"]);
   });
 });

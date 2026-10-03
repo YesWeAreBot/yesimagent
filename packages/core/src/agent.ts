@@ -1,15 +1,13 @@
-import { experimental_getToolCaller as getToolCaller } from "@ai-sdk/provider-utils";
+import { LanguageModelV4 } from "@ai-sdk/provider";
 import {
+  experimental_getToolCaller as getToolCaller,
   experimental_toolCaller as toolCaller,
-  streamText,
-  type LanguageModel,
-  type LanguageModelCallOptions,
   type ModelMessage,
   type Tool,
-  type ToolChoice,
   type ToolExecutionOptions,
   type ToolSet,
-} from "ai";
+} from "@ai-sdk/provider-utils";
+import { streamText, type LanguageModelCallOptions, type ToolChoice } from "ai";
 
 import { AgentChannel } from "./channel.js";
 import { createEntry, type AgentEntry } from "./entry.js";
@@ -31,7 +29,7 @@ export interface AgentSendOptions {
 
 export interface AgentConfig {
   id?: string;
-  model: LanguageModel;
+  model: LanguageModelV4;
   instructions?: string;
   tools?: ToolSet;
   /** Host state shared by every step of a turn; a `prepareStep` may replace it for the rest of the turn. */
@@ -72,8 +70,8 @@ export interface Agent {
   run(message: AgentMessage, options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
   wait(options?: AgentWaitOptions): Promise<void>;
   interrupt(reason?: unknown): Promise<void>;
-  getModel(): LanguageModel;
-  setModel(model: LanguageModel): void;
+  getModel(): LanguageModelV4;
+  setModel(model: LanguageModelV4): void;
   clear(): Promise<void>;
   getActiveTurnId(): string | null;
   isIdle(): boolean;
@@ -191,9 +189,9 @@ export function createAgent(config: AgentConfig): Agent {
     return modelMessages;
   };
 
-  const streamStep = async (request: TurnRequest, options: StepOptions, stepTools: ToolSet, stepMessages: ModelMessage[]) => {
+  const streamStep = async (request: TurnRequest, options: StepOptions, stepTools: ToolSet, stepMessages: ModelMessage[], stepModel: LanguageModelV4) => {
     const response = streamText({
-      model,
+      model: stepModel,
       instructions,
       messages: stepMessages,
       tools: stepTools,
@@ -212,7 +210,8 @@ export function createAgent(config: AgentConfig): Agent {
     });
 
     // Draining the stream is what runs the step's tool calls; an `error` part has to surface as a failed turn.
-    for await (const part of response.fullStream) {
+    for await (const part of response.stream) {
+      await channel.emit("stream", part);
       if (part.type === "error") throw part.error;
     }
 
@@ -272,7 +271,10 @@ export function createAgent(config: AgentConfig): Agent {
       stepTools[name] = wrap(name, tool);
     }
 
-    const response = await streamStep(request, prepared, stepTools, messages);
+    // One snapshot per step: the model that runs the request is the one recorded on the messages it
+    // produces, so a `setModel` landing mid-step cannot label a response with a model that never ran it.
+    const stepModel = model;
+    const response = await streamStep(request, prepared, stepTools, messages, stepModel);
 
     const usage = await response.usage;
     const finishReason = await response.finishReason;
@@ -286,6 +288,8 @@ export function createAgent(config: AgentConfig): Agent {
           usage,
           finishReason,
           providerOptions: message.providerOptions,
+          provider: stepModel.provider,
+          modelId: stepModel.modelId,
         }),
       );
     const returnedToolMessages = responseMessages

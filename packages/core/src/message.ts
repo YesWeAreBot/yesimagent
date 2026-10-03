@@ -19,6 +19,8 @@ export interface AgentUserMessage extends AgentMessageBase, UserModelMessage {}
 export interface AgentSystemMessage extends AgentMessageBase, SystemModelMessage {}
 
 export interface AgentAssistantMessage extends AgentMessageBase, AssistantModelMessage {
+  provider?: string;
+  modelId?: string;
   usage?: Partial<LanguageModelUsage>;
   finishReason?: string;
 }

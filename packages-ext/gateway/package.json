@@ -20,10 +20,10 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.52",
-    "@ai-sdk/google": "4.0.67",
-    "@ai-sdk/openai": "4.0.65",
-    "@ai-sdk/openai-compatible": "3.0.47"
+    "@ai-sdk/anthropic": "4.0.71",
+    "@ai-sdk/google": "4.0.87",
+    "@ai-sdk/openai": "4.0.83",
+    "@ai-sdk/openai-compatible": "3.0.62"
   },
   "devDependencies": {
     "@yesimagent/core": "workspace:*"

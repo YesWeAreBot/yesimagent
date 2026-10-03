@@ -5,6 +5,7 @@ A small agent runtime on the [AI SDK](https://ai-sdk.dev). It runs turns — que
 - **AI SDK underneath** — the model loop is `streamText` with an `AbortSignal`; messages map onto `ModelMessage`. Re-exports `ai`, `@ai-sdk/provider` and `@ai-sdk/provider-utils`, so a host depending on `@yesimagent/core` sees one consistent AI SDK.
 - **Append-only entries** — everything that happens lands in storage as typed entries. History is what actually happened, and plugins can read and transform it before each step.
 - **Turns are explicit** — one active turn at a time, with `defer` / `join` / `reject` behavior for messages that arrive mid-turn.
+- **Live output** — every model part of every step is published on the `"stream"` channel as it arrives, so a UI can render a step before its messages are stored.
 
 ## Install
 
@@ -28,6 +29,10 @@ const agent = createAgent({
 // Subscribe before sending: the turn starts on the next tick, and events are not replayed.
 agent.channel.subscribe("agent", (event) => {
   if (event.type === "turn.done") console.log(`turn ${event.turnId} finished`);
+});
+// Same channel rules; model parts arrive while the step is still running (see Channel).
+agent.channel.subscribe("stream", (part) => {
+  if (part.type === "text-delta") process.stdout.write(part.text);
 });
 
 agent.send(createUserMessage("Say hello."));
@@ -64,14 +69,14 @@ Two ways to drive it:
 
 Lifecycle around turns:
 
-| Method               | Purpose                                                                 |
-| -------------------- | ----------------------------------------------------------------------- |
-| `init()`             | Runs plugin `init` hooks; lazy on the first turn.                       |
-| `stop()`             | Interrupts the active turn, stops plugins in reverse order.             |
-| `wait(options?)`     | Resolves when the agent is idle; rejects if the optional signal aborts. |
-| `interrupt(reason?)` | Aborts the active turn and everything queued.                           |
-| `clear()`            | Clears storage.                                                         |
-| `setModel(model)`    | Swaps the model; takes effect on the next step.                         |
+| Method               | Purpose                                                                                                     |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `init()`             | Runs plugin `init` hooks; lazy on the first turn.                                                           |
+| `stop()`             | Interrupts the active turn, stops plugins in reverse order.                                                 |
+| `wait(options?)`     | Resolves when the agent is idle; rejects if the optional signal aborts.                                     |
+| `interrupt(reason?)` | Aborts the active turn and everything queued.                                                               |
+| `clear()`            | Clears storage.                                                                                             |
+| `setModel(model)`    | Swaps the model; takes effect on the next step, where its messages record that step's `provider`/`modelId`. |
 
 ## Messages and entries
 
@@ -82,7 +87,7 @@ createUserMessage(content); // also: createSystemMessage, createAssistantMessage
 createCustomMessage(type, data); // runtime-only message, projected into model messages by plugins
 ```
 
-Every message carries runtime metadata (`id`, `timestamp`), assistant messages additionally `usage` and `finishReason`. A message becomes durable when the agent appends it as an entry:
+Every message carries runtime metadata (`id`, `timestamp`); assistant messages additionally carry `usage`, `finishReason`, and the `provider`/`modelId` of the model that produced that step. A message becomes durable when the agent appends it as an entry:
 
 ```ts
 interface AgentEntry<T> {
@@ -268,7 +273,18 @@ agent.state.update({ userName: "Alice" }); // also: set(valueOrFn), get()
 
 ## Channel
 
-`agent.channel` is a tiny typed pub-sub (`subscribe` / `emit`) for anything that wants to observe or talk to the agent outside the turn loop — UIs, bridges, tests. The agent itself emits its lifecycle on the `"agent"` channel; listener errors are swallowed so they cannot affect the loop.
+`agent.channel` is a tiny typed pub-sub (`subscribe` / `emit`) for anything that wants to observe or talk to the agent outside the turn loop — UIs, bridges, tests. The agent itself emits on two channels:
+
+- `"agent"` — lifecycle and turn events (`AgentEvent`, listed under Turns).
+- `"stream"` — every model part of every step, in order, as it arrives: the same `TextStreamPart<ToolSet>` stream `streamText` produces, SDK frames (`start`, `start-step`, `finish-step`, `finish`) included. Parts are not replayed, so subscribe before the turn starts; that is what lets a UI render a step while it is still running, before its messages are stored.
+
+```ts
+agent.channel.subscribe("stream", (part) => {
+  if (part.type === "text-delta") process.stdout.write(part.text);
+});
+```
+
+Declare your own channel by merging into `AgentCustomEvent`; listener errors are swallowed so they cannot affect the loop.
 
 ## Errors
 
