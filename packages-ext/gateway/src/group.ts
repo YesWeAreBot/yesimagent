@@ -5,7 +5,7 @@ import type { Candidate, CircuitBreakerConfig, CircuitBreakerStatus, Group, Grou
 
 /** A group member as the gateway resolves it, before the group binds it to its breaker. */
 export interface CandidateSource {
-  /** Canonical reference, `${provider}:${modelId}`. */
+  /** Canonical reference, `${provider}:${modelId}[:thinkLevel]`. */
   readonly id: string;
   readonly model: LanguageModelV4;
   readonly metadata: ModelMetadata<"language">;

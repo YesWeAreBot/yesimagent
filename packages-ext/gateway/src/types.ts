@@ -64,6 +64,15 @@ export const GROUP_STRATEGIES = ["failover", "round-robin", "random"] as const;
 
 export type GroupStrategy = (typeof GROUP_STRATEGIES)[number];
 
+/**
+ * Think levels a reference may pin as a trailing `:level` segment. `none` through `xhigh` mirror
+ * the AI SDK's portable `reasoning` call option; `max` is an OpenAI-family extension the other
+ * providers warn about and ignore.
+ */
+export const THINK_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type ThinkLevel = (typeof THINK_LEVELS)[number];
+
 export interface CircuitBreakerConfig {
   /** Consecutive failures before the breaker opens. */
   readonly failureThreshold: number;
@@ -86,7 +95,7 @@ export interface CircuitBreakerStatus {
 export interface GroupConfig {
   /** Defaults to `failover`. */
   readonly strategy?: GroupStrategy;
-  /** Model references, `${provider}:${modelId}`. */
+  /** Model references, `${provider}:${modelId}[:thinkLevel]`. */
   readonly models: readonly string[];
   readonly circuitBreaker?: Partial<CircuitBreakerConfig>;
 }

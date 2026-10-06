@@ -1,3 +1,4 @@
+import type { LanguageModelV4CallOptions } from "@yesimagent/core";
 import { describe, expect, it } from "vitest";
 
 import { GatewayError } from "../src/errors.js";
@@ -260,5 +261,104 @@ describe("gateway reconfigure", () => {
         .candidates()
         .map((candidate) => candidate.id),
     ).toEqual(["mock:slow"]);
+  });
+});
+
+const call = (prompt = "hi"): Pick<LanguageModelV4CallOptions, "prompt"> => ({
+  prompt: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+});
+
+describe("gateway think levels", () => {
+  it("pins the level a reference carries onto the calls", async () => {
+    const mocked = mockProvider({ language: ["main"] });
+    const gateway = createGateway({
+      config: { providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "main" }] } } },
+      apis: { mock: () => mocked.provider },
+    });
+
+    const model = gateway.languageModel("mock:main:high");
+    expect(model.modelId).toBe("main");
+    await model.doGenerate(call());
+
+    expect(mocked.language.main.doGenerateCalls[0].reasoning).toBe("high");
+  });
+
+  it("leaves plain references untouched", async () => {
+    const mocked = mockProvider({ language: ["main"] });
+    const gateway = createGateway({
+      config: { providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "main" }] } } },
+      apis: { mock: () => mocked.provider },
+    });
+
+    expect(gateway.languageModel("mock:main")).toBe(mocked.language.main);
+  });
+
+  it("keeps model ids that contain colons parseable, with and without a level", async () => {
+    const mocked = mockProvider({ language: ["qwen3:32b"] });
+    const gateway = createGateway({
+      config: { providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "qwen3:32b" }] } } },
+      apis: { mock: () => mocked.provider },
+    });
+
+    expect(gateway.languageModel("mock:qwen3:32b").modelId).toBe("qwen3:32b");
+    await gateway.languageModel("mock:qwen3:32b").doGenerate(call());
+    expect(mocked.language["qwen3:32b"].doGenerateCalls[0].reasoning).toBeUndefined();
+
+    await gateway.languageModel("mock:qwen3:32b:low").doGenerate(call());
+    expect(mocked.language["qwen3:32b"].doGenerateCalls[1].reasoning).toBe("low");
+  });
+
+  it("reports an unknown trailing segment as an undeclared model", () => {
+    const gateway = build(config());
+
+    expect(() => gateway.languageModel("mock:main:highx")).toThrow(/does not declare "main:highx"/);
+  });
+
+  it("refuses a level on a non-language model", () => {
+    const gateway = build(config());
+
+    expect(() => gateway.embeddingModel("mock:vectors:high")).toThrow(/Think level "high" only applies to language models/);
+  });
+
+  it("carries a member's level through a group, as its own candidate", async () => {
+    const mocked = mockProvider({ language: ["main", "turbo"] });
+    const gateway = createGateway({
+      config: {
+        providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "main" }, { id: "turbo" }] } },
+        groups: { mixed: { models: ["mock:main:high", "mock:turbo"] } },
+      },
+      apis: { mock: () => mocked.provider },
+    });
+
+    const [first, second] = gateway.group("mixed").candidates();
+    expect(first.id).toBe("mock:main:high");
+    expect(second.id).toBe("mock:turbo");
+
+    await first.model.doGenerate(call());
+    await second.model.doGenerate(call());
+    expect(mocked.language.main.doGenerateCalls[0].reasoning).toBe("high");
+    expect(mocked.language.turbo.doGenerateCalls[0].reasoning).toBeUndefined();
+  });
+
+  it("fails a level the declaration does not support, at construction for groups", async () => {
+    const config = {
+      providers: {
+        mock: {
+          api: "mock",
+          apiKey: "sk",
+          models: [{ id: "picky", thinking: { mode: "enum", efforts: ["low", "medium"] } }],
+        },
+      },
+    };
+
+    const lazy = createGateway({ config, apis: { mock: () => mockProvider({ language: ["picky"] }).provider } });
+    expect(() => lazy.languageModel("mock:picky:max")).toThrow(/does not support think level "max" \(declared: low, medium\)/);
+
+    expect(() =>
+      createGateway({
+        config: { ...config, groups: { broken: { models: ["mock:picky:max"] } } },
+        apis: { mock: () => mockProvider({ language: ["picky"] }).provider },
+      }),
+    ).toThrow(GatewayError);
   });
 });

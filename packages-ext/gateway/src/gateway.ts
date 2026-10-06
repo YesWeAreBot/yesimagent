@@ -1,18 +1,53 @@
-import { formatErrorCause } from "@yesimagent/core";
-import type { ProviderV4 } from "@yesimagent/core";
+import { formatErrorCause, wrapLanguageModel } from "@yesimagent/core";
+import type { LanguageModelV4, LanguageModelV4CallOptions, ProviderV4 } from "@yesimagent/core";
 
 import { BUILTIN_APIS } from "./dialects/index.js";
 import { GatewayError } from "./errors.js";
 import { ModelGroup } from "./group.js";
 import type { CandidateSource } from "./group.js";
-import type { ApiFactory, Gateway, GatewayConfig, GatewayOptions, Group, Model, ModelType, ProviderConfig, ProviderSetup } from "./types.js";
+import type { ApiFactory, Gateway, GatewayConfig, GatewayOptions, Group, Model, ModelType, ProviderConfig, ProviderSetup, ThinkLevel } from "./types.js";
+import { THINK_LEVELS } from "./types.js";
 
 const VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-/** Splits a `provider:modelId` reference, or `undefined` when it is not one. */
-const split = (reference: string): readonly [string, string] | undefined => {
+/** Splits a `provider:modelId[:thinkLevel]` reference, or `undefined` when it is not one. The level
+ *  only counts when the trailing segment exactly names one, so model ids that contain colons
+ *  (`qwen3:32b`) parse as before. */
+const split = (reference: string): { provider: string; modelId: string; level: ThinkLevel | undefined } | undefined => {
   const separator = reference.indexOf(":");
-  return separator === -1 ? undefined : ([reference.slice(0, separator), reference.slice(separator + 1)] as const);
+  if (separator === -1) return undefined;
+
+  let modelId = reference.slice(separator + 1);
+  let level: ThinkLevel | undefined;
+  const tail = modelId.lastIndexOf(":");
+  if (tail !== -1) {
+    const candidate = modelId.slice(tail + 1);
+    if ((THINK_LEVELS as readonly string[]).includes(candidate)) {
+      level = candidate as ThinkLevel;
+      modelId = modelId.slice(0, tail);
+    }
+  }
+  return { provider: reference.slice(0, separator), modelId, level };
+};
+
+/** Pins a think level onto every call the model sees, by way of the AI SDK's portable `reasoning`
+ *  call option. `"max"` sits outside the spec's enum: OpenAI-family endpoints accept it, the other
+ *  providers emit an unsupported warning and ignore it. */
+const withThinkLevel = (model: LanguageModelV4, level: ThinkLevel): LanguageModelV4 =>
+  wrapLanguageModel({
+    model,
+    middleware: {
+      specificationVersion: "v4",
+      transformParams: async ({ params }) => ({ ...params, reasoning: level as LanguageModelV4CallOptions["reasoning"] }),
+    },
+  });
+
+/** Throws when the model declares the efforts it supports and the reference pins another one. */
+const checkEfforts = (model: Model<"language">, level: ThinkLevel): void => {
+  const efforts = model.metadata.thinking?.efforts;
+  if (efforts?.length && !efforts.includes(level)) {
+    throw new GatewayError(`Model "${model.id}" does not support think level "${level}" (declared: ${efforts.join(", ")})`);
+  }
 };
 
 /** Replaces `${NAME}` with its value; an unset one fails the build. */
@@ -62,23 +97,35 @@ export function createGateway(options: GatewayOptions): Gateway {
   };
 
   /** Resolves a reference to the provider behind it and the declared model it names. */
-  const locate = <T extends ModelType>(type: T, reference: string): { provider: ProviderV4; model: Model<T> } => {
+  const locate = <T extends ModelType>(type: T, reference: string): { provider: ProviderV4; model: Model<T>; level: ThinkLevel | undefined } => {
     const parts = split(reference);
     if (!parts) throw new GatewayError(`"${reference}" is not a "provider:model" reference`);
 
-    const provider = providers.get(parts[0]);
-    if (!provider) throw new GatewayError(`Unknown provider "${parts[0]}" (from "${reference}"); registered: ${[...providers.keys()].join(", ") || "none"}`);
+    const { provider: providerId, modelId, level } = parts;
+    const provider = providers.get(providerId);
+    if (!provider) throw new GatewayError(`Unknown provider "${providerId}" (from "${reference}"); registered: ${[...providers.keys()].join(", ") || "none"}`);
 
-    const model = models.get(`${parts[0]}:${parts[1]}`) as Model<T>;
-    if (!model) throw new GatewayError(`Provider "${parts[0]}" does not declare "${parts[1]}"`);
+    const model = models.get(`${providerId}:${modelId}`) as Model<T>;
+    if (!model) throw new GatewayError(`Provider "${providerId}" does not declare "${modelId}"`);
     if (model.type !== type) throw new GatewayError(`Model "${model.id}" is declared as ${model.type}, not ${type}`);
+    if (level !== undefined && type !== "language") {
+      throw new GatewayError(`Think level "${level}" only applies to language models (from "${reference}")`);
+    }
 
-    return { provider, model };
+    return { provider, model, level };
   };
 
   const candidate = (reference: string): CandidateSource => {
-    const { provider, model } = locate("language", reference);
-    return { id: model.id, model: provider.languageModel(model.modelId), metadata: model.metadata };
+    const { provider, model, level } = locate("language", reference);
+    if (level !== undefined) checkEfforts(model, level);
+    const built = provider.languageModel(model.modelId);
+    return {
+      // The level is part of the member's identity: the same model pinned at two levels is two
+      // candidates, and two independent breaker entries.
+      id: level === undefined ? model.id : `${model.id}:${level}`,
+      model: level === undefined ? built : withThinkLevel(built, level),
+      metadata: model.metadata,
+    };
   };
 
   /** Rebuilds the providers the configuration declares, the catalog of their models, and the groups. */
@@ -136,8 +183,10 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
 
     languageModel(name) {
-      const { provider, model } = locate("language", name);
-      return provider.languageModel(model.modelId);
+      const { provider, model, level } = locate("language", name);
+      if (level !== undefined) checkEfforts(model, level);
+      const built = provider.languageModel(model.modelId);
+      return level === undefined ? built : withThinkLevel(built, level);
     },
 
     embeddingModel(name) {

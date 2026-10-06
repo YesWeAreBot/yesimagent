@@ -2,9 +2,9 @@
 
 An AI SDK model registry. Resolve a `provider:model` reference to a native AI SDK model, with failover groups and circuit breakers on top. Cordis-free — no framework, no service shell.
 
-The gateway owns the boring part of using many providers: building AI SDK providers from configuration, expanding credentials, keeping a catalog of declared models, and offering interchangeable models through a group with health tracking. It hands out whatever the AI SDK factories return — it never wraps or reinterprets models.
+The gateway owns the boring part of using many providers: building AI SDK providers from configuration, expanding credentials, keeping a catalog of declared models, and offering interchangeable models through a group with health tracking. It hands out whatever the AI SDK factories return — unless a reference pins a think level, it never wraps or reinterprets models.
 
-- **Native models out** — every resolve returns what the AI SDK factories built. `providerOptions` keys, wire protocols, and capabilities behave exactly as the AI SDK documents them.
+- **Native models out** — every resolve returns what the AI SDK factories built. `providerOptions` keys, wire protocols, and capabilities behave exactly as the AI SDK documents them. The one exception is a reference that pins a think level (`provider:model:high`), which adds a thin middleware setting the AI SDK's `reasoning` call option.
 - **Configuration in** — a host reads its own file format (yaml, json, …) and hands the parsed shape over. The gateway only defines the shape and expands `${VAR}` references against its `env`.
 - **Fail small** — bad configuration fails at construction with a `GatewayError`, not at the first call.
 
@@ -96,6 +96,25 @@ interface GroupConfig {
 `gateway.group("fast").candidates()` returns the members in the strategy's order, skipping models whose breaker is open. Each candidate carries `success()` / `failure()` feedback into the group's breakers. When every breaker is open, the full list is offered anyway — a mute bot is worse than one more doomed attempt.
 
 Every member must resolve when the gateway is built. A group with a typo in it fails at construction, with the reference named.
+
+### Think levels
+
+A language reference may pin a think level as a trailing segment — `provider:modelId[:level]` — with the levels `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The pinned level rides into every call the model sees as the AI SDK's portable `reasoning` option, which each provider translates to its native controls (`reasoningEffort`, `thinking`, `thinkingConfig`, …).
+
+```ts
+gateway.languageModel("relay:main:low");
+```
+
+```yaml
+groups:
+  fast:
+    models: ["relay:main:low", "relay:turbo"] # levels mix freely with plain members
+```
+
+- The trailing segment only counts when it exactly names a level, so model ids that contain colons (`ollama:qwen3:32b`) parse as before. The flip side: a model id that itself ends in a level name cannot be referenced.
+- A member pinned at a level is its own candidate and its own breaker entry — the same model at two levels are independent members.
+- When a declaration lists `thinking.efforts`, a pinned level outside that list fails at construction with the level named.
+- `max` sits outside the AI SDK spec's enum: OpenAI-family endpoints accept it, other providers emit an unsupported warning and ignore it.
 
 ## Apis
 
