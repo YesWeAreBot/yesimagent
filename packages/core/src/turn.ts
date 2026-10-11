@@ -225,7 +225,7 @@ export class AgentQueue {
       request.seal();
       throwIfAborted(request.signal);
       if (request.signal.aborted) status = "aborted";
-      await this.options.emit({ type: "turn.done", turnId: request.turnId, usage });
+      await this.options.emit({ type: "turn.done", turnId: request.turnId });
     } catch (error) {
       status = isAbortError(error) || request.signal.aborted ? "aborted" : "failed";
       turnError = serializeError(error);

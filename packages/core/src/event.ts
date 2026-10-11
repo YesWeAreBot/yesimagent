@@ -51,7 +51,6 @@ export interface TurnStepEvent {
 export interface TurnDoneEvent {
   type: "turn.done";
   turnId: string;
-  usage?: Partial<LanguageModelUsage>;
 }
 
 export interface TurnFailedEvent {
