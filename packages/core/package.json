@@ -20,9 +20,9 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.21",
-    "@ai-sdk/provider-utils": "5.0.53",
-    "ai": "7.0.127",
+    "@ai-sdk/provider": "4.0.26",
+    "@ai-sdk/provider-utils": "5.0.58",
+    "ai": "7.0.137",
     "zod": "3.25.76"
   }
 }

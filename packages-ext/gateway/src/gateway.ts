@@ -1,10 +1,11 @@
-import { formatErrorCause, wrapLanguageModel } from "@yesimagent/core";
+import type { TypeSafeAiProvider } from "@ai-sdk/typesafe-ai";
 import type { LanguageModelV4, LanguageModelV4CallOptions, ProviderV4 } from "@yesimagent/core";
+import { formatErrorCause, wrapLanguageModel } from "@yesimagent/core";
 
 import { BUILTIN_APIS } from "./dialects/index.js";
 import { GatewayError } from "./errors.js";
-import { ModelGroup } from "./group.js";
 import type { CandidateSource } from "./group.js";
+import { ModelGroup } from "./group.js";
 import type { ApiFactory, Gateway, GatewayConfig, GatewayOptions, Group, Model, ModelType, ProviderConfig, ProviderSetup, ThinkLevel } from "./types.js";
 import { THINK_LEVELS } from "./types.js";
 
@@ -217,6 +218,13 @@ export function createGateway(options: GatewayOptions): Gateway {
       const { provider, model } = locate("reranking", name);
       const factory = provider.rerankingModel;
       if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no rerankingModel`);
+      return factory(model.modelId);
+    },
+
+    decisionModel(name) {
+      const { provider, model } = locate("decision", name);
+      const factory = (provider as TypeSafeAiProvider).decisionModel;
+      if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no decisionModel`);
       return factory(model.modelId);
     },
 

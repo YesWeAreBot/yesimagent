@@ -3,6 +3,7 @@ import { anthropicMessages } from "./anthropic.js";
 import { googleGenerativeAi } from "./google.js";
 import { openaiCompletions } from "./openai-compatible.js";
 import { openaiResponses } from "./openai.js";
+import { typesafeAi } from "./typesafe.js";
 
 /**
  * The dialects a gateway starts with. Keys are the values `providers.<id>.api` takes; a host can
@@ -13,9 +14,11 @@ export const BUILTIN_APIS: Readonly<Record<string, ApiFactory>> = {
   "openai-responses": openaiResponses,
   "anthropic-messages": anthropicMessages,
   "google-generative-ai": googleGenerativeAi,
+  "typesafe-ai": typesafeAi,
 };
 
 export * from "./anthropic.js";
 export * from "./google.js";
 export * from "./openai-compatible.js";
 export * from "./openai.js";
+export * from "./typesafe.js";

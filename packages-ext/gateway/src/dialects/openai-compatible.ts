@@ -1,4 +1,4 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOpenAICompatible, type OpenAICompatibleProviderSettings } from "@ai-sdk/openai-compatible";
 
 import type { ApiFactory } from "../types.js";
 
@@ -11,14 +11,16 @@ import type { ApiFactory } from "../types.js";
  * An unauthenticated endpoint needs no `apiKey` at all — the SDK only sends the header when one is
  * configured, unlike the OpenAI provider, which insists on a key.
  */
-export const openaiCompletions: ApiFactory = (setup) =>
-  createOpenAICompatible({
+export const openaiCompletions: ApiFactory = (setup) => {
+  const settings: OpenAICompatibleProviderSettings = {
     ...setup.settings,
     name: setup.id,
     baseURL: setup.baseUrl ?? "",
     apiKey: setup.apiKey,
     headers: { ...setup.headers },
     fetch: setup.fetch,
-  });
+  };
+  return createOpenAICompatible(settings);
+};
 
 export { createOpenAICompatible, type OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";

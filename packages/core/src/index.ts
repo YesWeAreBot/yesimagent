@@ -3,7 +3,13 @@ export * from "@ai-sdk/provider-utils";
 export * from "ai";
 export * from "ai/test";
 
-export { InvalidArgumentError, simulateReadableStream, type JSONValue, type ProviderReference } from "ai";
+export {
+  InvalidArgumentError,
+  simulateReadableStream,
+  type Experimental_EvaluationUnsupportedQuestionTypeError,
+  type JSONValue,
+  type ProviderReference,
+} from "ai";
 
 export { createAgent, type Agent } from "./agent.js";
 

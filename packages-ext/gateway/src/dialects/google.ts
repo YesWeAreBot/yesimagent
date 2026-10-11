@@ -8,13 +8,15 @@ import type { ApiFactory } from "../types.js";
  * `baseUrl` is optional: without it the SDK uses Google's endpoint and reads `GOOGLE_GENERATIVE_AI_API_KEY`
  * when no `apiKey` is configured.
  */
-export const googleGenerativeAi: ApiFactory = (setup) =>
-  createGoogleGenerativeAI({
+export const googleGenerativeAi: ApiFactory = (setup) => {
+  const settings = {
     ...setup.settings,
     baseURL: setup.baseUrl,
     apiKey: setup.apiKey,
     headers: { ...setup.headers },
     fetch: setup.fetch,
-  });
+  };
+  return createGoogleGenerativeAI(settings);
+};
 
 export { createGoogleGenerativeAI, type GoogleGenerativeAIProvider } from "@ai-sdk/google";

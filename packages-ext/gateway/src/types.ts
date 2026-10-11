@@ -1,12 +1,21 @@
-import type { EmbeddingModelV4, ImageModelV4, LanguageModelV4, ProviderV4, RerankingModelV4, SpeechModelV4, TranscriptionModelV4 } from "@yesimagent/core";
+import type {
+  EmbeddingModelV4,
+  ImageModelV4,
+  LanguageModelV4,
+  ProviderV4,
+  RerankingModelV4,
+  SpeechModelV4,
+  TranscriptionModelV4,
+  Experimental_DecisionModelV4 as DecisionModelV4,
+} from "@yesimagent/core";
 
-export const MODEL_TYPES = ["language", "embedding", "image", "speech", "transcription", "reranking"] as const;
+export const MODEL_TYPES = ["language", "embedding", "image", "speech", "transcription", "reranking", "decision"] as const;
 
 export type ModelType = (typeof MODEL_TYPES)[number];
 
-export const MODEL_MODALITIES = ["text", "image", "audio", "video", "pdf"] as const;
+export const MODALITIES = ["text", "image", "audio", "video", "pdf"] as const;
 
-export type ModelModality = (typeof MODEL_MODALITIES)[number];
+export type Modality = (typeof MODALITIES)[number];
 
 /* Configuration */
 
@@ -22,14 +31,14 @@ export interface LanguageModelConfig extends BaseModelConfig {
   readonly toolCall?: boolean;
   readonly reasoning?: boolean;
   readonly thinking?: { mode: string; efforts: string[] };
-  readonly input?: readonly ModelModality[];
+  readonly input?: readonly Modality[];
   readonly contextWindow?: number;
   readonly maxTokens?: number;
 }
 
 export interface EmbeddingModelConfig extends BaseModelConfig {
   readonly type: "embedding";
-  readonly input?: readonly ModelModality[];
+  readonly input?: readonly Modality[];
   readonly dimensions?: number;
 }
 
@@ -200,6 +209,7 @@ export interface Gateway {
   speechModel(name: string): SpeechModelV4;
   transcriptionModel(name: string): TranscriptionModelV4;
   rerankingModel(name: string): RerankingModelV4;
+  decisionModel(name: string): DecisionModelV4;
 
   /** The group's candidates, for callers that want to try another model after a failure. */
   group(name: string): Group;
