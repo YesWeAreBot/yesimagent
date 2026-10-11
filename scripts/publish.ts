@@ -25,6 +25,12 @@ const packages = workspaces
   )
   .filter((dir) => statSync(dir).isDirectory());
 
+// bun resolves `workspace:*` in `bun pm pack` from bun.lock, not from the
+// dependency's package.json, and bun.lock is only refreshed by install. bumpp
+// bumps versions in package.json alone, so without this the tarball pins the
+// previous release's versions.
+execFileSync("bun", ["install", "--lockfile-only"], { cwd: root, stdio: "inherit" });
+
 const destination = mkdtempSync(path.join(tmpdir(), "yesimagent-publish-"));
 
 try {

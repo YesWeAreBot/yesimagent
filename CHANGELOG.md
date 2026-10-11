@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **core**: the `turn.done` event no longer carries `usage`; per-step numbers stay on `turn.step` and the final usage on `TurnResult`
+
 ### Added
 
 - **gateway**: think levels on model references (`provider:modelId[:level]`). The level rides into every call as the AI SDK's portable `reasoning` option — in `languageModel()` and per group member, each level its own breaker entry. A declaration listing `thinking.efforts` fails construction on an unsupported level.
+- **gateway**: decision models — a `typesafe-ai` dialect and `decisionModel()` on the gateway interface, with `decision` added to the model types
+
+### Changed
+
+- **gateway**: the modality exports are now `MODALITIES` and `Modality` (previously `MODEL_MODALITIES` and `ModelModality`)
+- **core**: `ai` bumped to 7.0.137 and `@ai-sdk/provider-utils` to 5.0.58
 
 ## [0.0.6] - 2026-10-04
 
