@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-10-14
+
 ### Added
+
 - `agent.send()` and `agent.run()` accept an array of messages, opening a single turn with the whole batch in order
 - **core**: `agent.continue(reason?)` opens a turn from a synthesized `Continue.` user message when idle; while a turn is active (or a wake is already pending) the reason merges into that one pending wake — joined with `"; "` into the same message — and the wake fires when the queue drains
+
 ## [0.0.7] - 2026-10-11
 
 ### Breaking Changes
@@ -91,7 +95,8 @@ Initial release.
 - **docs**: READMEs for both packages.
 - **build**: release workflow and bump configuration for automated versioning.
 
-[Unreleased]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.4...v0.0.5
