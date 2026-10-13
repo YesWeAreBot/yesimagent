@@ -66,8 +66,13 @@ export interface Agent {
   readonly state: AgentStateManager;
   init(): Promise<void>;
   stop(): Promise<void>;
-  send(message: AgentMessage, options?: AgentSendOptions): string | undefined;
-  run(message: AgentMessage, options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
+  /**
+   * Hands one message, or one turn's opening batch, to the queue. A batch is persisted whole
+   * before the first step reads storage, so the model sees the burst in the order given; an
+   * empty array is a no-op.
+   */
+  send(message: AgentMessage | AgentMessage[], options?: AgentSendOptions): string | undefined;
+  run(message: AgentMessage | AgentMessage[], options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
   wait(options?: AgentWaitOptions): Promise<void>;
   interrupt(reason?: unknown): Promise<void>;
   getModel(): LanguageModelV4;
@@ -464,27 +469,29 @@ export function createAgent(config: AgentConfig): Agent {
     },
     send(message, options = {}) {
       if (stopping) throw new Error("Agent is stopping");
+      const messages: AgentMessage[] = Array.isArray(message) ? message : [message];
+      if (messages.length === 0) return undefined;
       const behavior = options.ifBusy ?? "defer";
       const activeTurnId = queue.activeTurnId;
       if (activeTurnId) {
         if (options.trigger === false) {
-          if (behavior === "join") queue.addJoinedToActive([message]);
-          else queue.addDeferredToActive([message]);
+          if (behavior === "join") queue.addJoinedToActive(messages);
+          else queue.addDeferredToActive(messages);
           return undefined;
         }
         if (behavior === "reject") throw new AgentBusyError();
         if (behavior === "join") {
-          queue.addJoinedToActive([message]);
+          queue.addJoinedToActive(messages);
           return activeTurnId;
         }
       }
       if (options.trigger === false) {
         // No active turn: persist immediately since there is no boundary to batch with.
-        void ensureInit().then(() => persistMessages([message]));
+        void ensureInit().then(() => persistMessages(messages));
         return undefined;
       }
 
-      const turnId = queue.enqueue([message], behavior);
+      const turnId = queue.enqueue(messages, behavior);
       if (turnId !== activeTurnId) void emit({ type: "turn.queued", turnId });
       return turnId;
     },

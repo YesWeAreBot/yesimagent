@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `agent.send()` and `agent.run()` accept an array of messages, opening a single turn with the whole batch in order
 ## [0.0.7] - 2026-10-11
 
 ### Breaking Changes

@@ -505,3 +505,72 @@ describe("stream channel", () => {
     expect(await storedRoles(agent)).toEqual(["user", "assistant"]);
   });
 });
+
+describe("agent send batching", () => {
+  it("opens one turn with the whole batch, in order", async () => {
+    const model = scriptedModel([textStep("done")]);
+    const agent = createAgent({ model });
+
+    const turnId = agent.send([createUserMessage("alpha"), createUserMessage("bravo"), createUserMessage("charlie")]);
+    await agent.wait();
+
+    expect(typeof turnId).toBe("string");
+    expect(model.doStreamCalls).toHaveLength(1);
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt.indexOf("alpha")).toBeLessThan(prompt.indexOf("bravo"));
+    expect(prompt.indexOf("bravo")).toBeLessThan(prompt.indexOf("charlie"));
+    expect(await storedRoles(agent)).toEqual(["user", "user", "user", "assistant"]);
+  });
+
+  it("treats an empty batch as a no-op", async () => {
+    const model = scriptedModel([textStep("done")]);
+    const agent = createAgent({ model });
+
+    expect(agent.send([])).toBeUndefined();
+    await agent.wait();
+
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(await storedRoles(agent)).toEqual([]);
+  });
+
+  it("stores a triggerless batch without opening a turn", async () => {
+    const model = scriptedModel([textStep("done")]);
+    const agent = createAgent({ model });
+    await agent.init();
+
+    expect(agent.send([createUserMessage("alpha"), createUserMessage("bravo")], { trigger: false })).toBeUndefined();
+    // A record-only send persists off the init promise rather than the turn queue, so there is no turn to wait on.
+    const flushed = Promise.withResolvers<void>();
+    setTimeout(flushed.resolve, 0);
+    await flushed.promise;
+
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(await storedRoles(agent)).toEqual(["user", "user"]);
+  });
+
+  it("lands a joined batch at one step boundary", async () => {
+    const model = scriptedModel([toolStep("hold", {}), textStep("one")]);
+    let agent!: Agent;
+    agent = createAgent({
+      model,
+      tools: {
+        hold: {
+          description: "Hold the step open.",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => {
+            agent.send([createUserMessage("joins-alpha"), createUserMessage("joins-bravo")], { ifBusy: "join" });
+            return { ok: true };
+          },
+        },
+      },
+    });
+
+    await runTurn(agent);
+    await agent.wait();
+
+    const prompt = JSON.stringify(model.doStreamCalls[1].prompt);
+    expect(prompt).toContain("joins-alpha");
+    expect(prompt).toContain("joins-bravo");
+    expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "user", "assistant"]);
+  });
+});
