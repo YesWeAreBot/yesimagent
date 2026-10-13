@@ -94,6 +94,23 @@ async function storedRoles(agent: Agent): Promise<string[]> {
   return entries.flatMap((entry) => (entry.type === "message" ? [entry.data.role] : []));
 }
 
+/** The content of every stored user message, the way a wake-turn assertion reads it back. */
+async function storedUserTexts(agent: Agent): Promise<string[]> {
+  const entries = await agent.storage.read();
+  return entries
+    .filter((entry): entry is AgentEntry<"message"> => entry.type === "message")
+    .map((entry) => entry.data)
+    .filter((message) => message.role === "user")
+    .map((message) => message.content as string);
+}
+
+/** Flushes pending microtasks so an enqueued turn reaches its next await. */
+const tick = (): Promise<void> => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+};
+
 function toolResultsOf(prompt: LanguageModelV4CallOptions["prompt"]) {
   return prompt.flatMap((message) => (message.role === "tool" ? message.content.filter((part) => part.type === "tool-result") : []));
 }
@@ -572,5 +589,116 @@ describe("agent send batching", () => {
     expect(prompt).toContain("joins-alpha");
     expect(prompt).toContain("joins-bravo");
     expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "user", "assistant"]);
+  });
+});
+
+describe("agent continue", () => {
+  it("opens a turn from idle and reports its id", async () => {
+    const model = scriptedModel([textStep("done")]);
+    const agent = createAgent({ model });
+
+    const turnId = agent.continue();
+    await agent.wait();
+
+    expect(typeof turnId).toBe("string");
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(await storedUserTexts(agent)).toEqual(["Continue."]);
+  });
+
+  it("appends the given reason to the synthesized message", async () => {
+    const model = scriptedModel([textStep("done")]);
+    const agent = createAgent({ model });
+
+    const turnId = agent.continue("timer 30s expired");
+    await agent.wait();
+
+    expect(typeof turnId).toBe("string");
+    expect(await storedUserTexts(agent)).toEqual(["Continue. Reason: timer 30s expired"]);
+  });
+
+  it("merges wakes requested mid-turn into one follow-up turn, even after a terminal last step", async () => {
+    const gate = Promise.withResolvers<void>();
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        await gate.promise;
+        return { stream: simulateReadableStream({ chunks: [textStep("done")] }) };
+      },
+    });
+    const agent = createAgent({ model });
+
+    agent.send(createUserMessage("opening"));
+    while (model.doStreamCalls.length < 1) await tick();
+    expect(agent.continue("r1")).toBeUndefined();
+    expect(agent.continue("r2")).toBeUndefined();
+
+    gate.resolve();
+    await agent.wait();
+
+    // The first turn ends on a terminal step (`continue: false`), yet the wake still fires.
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(await storedUserTexts(agent)).toEqual(["opening", "Continue. Reason: r1; r2"]);
+  });
+
+  it("keeps wait() pending until a merged wake turn has run", async () => {
+    const gate1 = Promise.withResolvers<void>();
+    const gate2 = Promise.withResolvers<void>();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        await (calls === 1 ? gate1 : gate2).promise;
+        return { stream: simulateReadableStream({ chunks: [textStep("done")] }) };
+      },
+    });
+    const agent = createAgent({ model });
+
+    agent.send(createUserMessage("opening"));
+    while (model.doStreamCalls.length < 1) await tick();
+    expect(agent.continue("later")).toBeUndefined();
+
+    let waitResolved = false;
+    const waiter = agent.wait().then(() => {
+      waitResolved = true;
+    });
+
+    gate1.resolve();
+    while (model.doStreamCalls.length < 2) await tick();
+    expect(waitResolved).toBe(false);
+
+    gate2.resolve();
+    await waiter;
+    expect(waitResolved).toBe(true);
+    expect(await storedUserTexts(agent)).toEqual(["opening", "Continue. Reason: later"]);
+  });
+
+  it("discards a pending wake on interrupt", async () => {
+    const gate = Promise.withResolvers<void>();
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        await gate.promise;
+        return { stream: simulateReadableStream({ chunks: [textStep("done")] }) };
+      },
+    });
+    const agent = createAgent({ model });
+
+    agent.send(createUserMessage("opening"));
+    while (model.doStreamCalls.length < 1) await tick();
+    expect(agent.continue("later")).toBeUndefined();
+
+    await agent.interrupt("reset");
+    gate.resolve();
+    await agent.wait();
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(await storedUserTexts(agent)).toEqual(["opening"]);
+  });
+
+  it("rejects a continue issued while stopping", async () => {
+    const agent = createAgent({ model: scriptedModel([textStep("done")]) });
+    await agent.init();
+
+    const stopping = agent.stop();
+    expect(() => agent.continue()).toThrow("Agent is stopping");
+    await stopping;
   });
 });

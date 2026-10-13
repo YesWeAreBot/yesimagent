@@ -2,7 +2,7 @@ import type { FinishReason, LanguageModelUsage } from "ai";
 
 import { AgentBusyError } from "./errors.js";
 import type { AgentEvent } from "./event.js";
-import type { AgentMessage } from "./message.js";
+import { createUserMessage, type AgentMessage } from "./message.js";
 
 export type BusyBehavior = "defer" | "join" | "reject";
 export type TurnStatus = "queued" | "running" | "done" | "failed" | "aborted";
@@ -74,6 +74,8 @@ export interface AgentWaitOptions {
 interface QueuedTurn {
   request: TurnRequest;
   controller: AbortController;
+  /** Marks a `continue`-requested turn: interrupt discards it even if it started while aborting. */
+  wake?: boolean;
 }
 
 export class AgentQueue {
@@ -82,6 +84,8 @@ export class AgentQueue {
   private active: QueuedTurn | undefined;
   private activeDone: Promise<void> | undefined;
   private pumping = false;
+  /** Reasons of a `continue` requested while turns were running; materialized once the queue drains. */
+  private pendingWake: string[] | undefined;
 
   constructor(private readonly options: TurnQueueOptions) {}
 
@@ -117,6 +121,27 @@ export class AgentQueue {
     return turn.request.turnId;
   }
 
+  /**
+   * Requests another turn without new input. Idle, it enqueues one whose opening message is a
+   * synthesized `Continue.` (reason appended when given) and returns its turn id; while turns are
+   * running or a wake is pending, the request merges into the single pending slot and returns
+   * `undefined` — the wake still fires once the queue drains, even after a terminal last step.
+   */
+  wake(reason?: string): string | undefined {
+    if (this.pendingWake) {
+      if (reason) this.pendingWake.push(reason);
+      return undefined;
+    }
+    if (this.active || this.queue.length > 0) {
+      this.pendingWake = reason ? [reason] : [];
+      return undefined;
+    }
+    const turn = createQueuedTurn([continueMessage(reason ? [reason] : [])], true);
+    this.queue.push(turn);
+    void this.pump();
+    return turn.request.turnId;
+  }
+
   wait(options: AgentWaitOptions = {}): Promise<void> {
     const { signal } = options;
     if (signal?.aborted) return Promise.reject(createAbortError());
@@ -134,12 +159,18 @@ export class AgentQueue {
   }
 
   async interrupt(reason?: unknown): Promise<void> {
+    this.pendingWake = undefined;
     if (this.active) {
       this.active.controller.abort(reason);
       await this.activeDone?.catch(() => undefined);
     }
 
     for (const turn of this.queue.splice(0)) turn.controller.abort(reason);
+    // A wake materialized while aborting above may already be running; discard it too.
+    if (this.active?.wake) {
+      this.active.controller.abort(reason);
+      await this.activeDone?.catch(() => undefined);
+    }
     this.notifyIdleWaiters();
   }
 
@@ -166,6 +197,12 @@ export class AgentQueue {
       this.pumping = false;
       this.activeDone = undefined;
       settleActive();
+      // Deferred wake fires once the queue drains, even after a terminal last step.
+      if (this.pendingWake && this.queue.length === 0) {
+        const reasons = this.pendingWake;
+        this.pendingWake = undefined;
+        this.queue.push(createQueuedTurn([continueMessage(reasons)], true));
+      }
       this.notifyIdleWaiters();
       void this.pump();
     }
@@ -265,7 +302,7 @@ export class AgentQueue {
   }
 }
 
-function createQueuedTurn(messages: AgentMessage[]): QueuedTurn {
+function createQueuedTurn(messages: AgentMessage[], wake = false): QueuedTurn {
   const controller = new AbortController();
   const deferred: AgentMessage[] = [];
   const joined: AgentMessage[] = [];
@@ -294,7 +331,15 @@ function createQueuedTurn(messages: AgentMessage[]): QueuedTurn {
       accepting = false;
     },
   };
-  return { request, controller };
+  const queued: QueuedTurn = { request, controller };
+  if (wake) queued.wake = true;
+  return queued;
+}
+
+/** The opening message of a `continue` turn: a stable marker, with merged reasons appended. */
+function continueMessage(reasons: string[]): AgentMessage {
+  const trimmed = reasons.map((reason) => reason.trim()).filter((reason) => reason.length > 0);
+  return createUserMessage(trimmed.length === 0 ? "Continue." : `Continue. Reason: ${trimmed.join("; ")}`);
 }
 
 function throwIfAborted(signal: AbortSignal): void {

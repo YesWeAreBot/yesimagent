@@ -62,10 +62,13 @@ interface AgentConfig {
 }
 ```
 
-Two ways to drive it:
+Three ways to drive it:
 
 - `send(message, options?)` submits a turn and returns its id immediately. When a turn is already active, `options.ifBusy` decides: `"defer"` queues it (default), `"join"` attaches it to the active turn's next step, `"reject"` throws `AgentBusyError`. `options.trigger: false` records the message without starting a turn: an active `"join"` message is visible to the next step, while an active `"defer"` message is visible in the next turn.
 - `run(message)` submits a turn and returns an async iterable of that turn's events, closing after `turn.done`, `turn.failed`, or `turn.aborted`.
+- `continue(reason?)` opens a turn with no incoming message: while idle it appends a synthesized user message — `Continue.`, or `Continue. Reason: <reason>` — and returns the new turn id. While a turn is active, or a wake is already pending, it merges into that single pending wake and returns `undefined`.
+
+The pending wake is one slot, not a queue: reasons merge into that one synthesized message, joined with `"; "`, and the wake fires once the queue drains — including after a turn whose last step already ended it, so input that joined a terminal step still gets answered. The reason is visible to the model only through that message; `turn.start` events do not carry it. `interrupt()` and `stop()` discard a pending wake, and calling `continue()` while the agent is stopping throws `Agent is stopping`.
 
 Lifecycle around turns:
 
@@ -74,6 +77,7 @@ Lifecycle around turns:
 | `init()`             | Runs plugin `init` hooks; lazy on the first turn.                                                           |
 | `stop()`             | Interrupts the active turn, stops plugins in reverse order.                                                 |
 | `wait(options?)`     | Resolves when the agent is idle; rejects if the optional signal aborts.                                     |
+| `continue(reason?)`  | Opens a turn from a synthesized `Continue.` message, or merges the reason into the pending wake.            |
 | `interrupt(reason?)` | Aborts the active turn and everything queued.                                                               |
 | `clear()`            | Clears storage.                                                                                             |
 | `setModel(model)`    | Swaps the model; takes effect on the next step, where its messages record that step's `provider`/`modelId`. |

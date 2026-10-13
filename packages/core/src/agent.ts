@@ -74,6 +74,13 @@ export interface Agent {
   send(message: AgentMessage | AgentMessage[], options?: AgentSendOptions): string | undefined;
   run(message: AgentMessage | AgentMessage[], options?: Omit<AgentSendOptions, "trigger">): AsyncIterable<AgentEvent>;
   wait(options?: AgentWaitOptions): Promise<void>;
+  /**
+   * Requests another turn without new input. Idle, it enqueues a turn whose opening message is a
+   * synthesized `Continue.` (reason appended when given) and returns its turn id; while turns are
+   * running or a wake is pending, the request merges into the single pending wake and returns
+   * `undefined` — the wake still fires once the queue drains, even after a terminal last step.
+   */
+  continue(reason?: string): string | undefined;
   interrupt(reason?: unknown): Promise<void>;
   getModel(): LanguageModelV4;
   setModel(model: LanguageModelV4): void;
@@ -499,6 +506,12 @@ export function createAgent(config: AgentConfig): Agent {
       const turnId = this.send(message, { ...options, trigger: true });
       if (!turnId) throw new Error("A triggered turn must have a turn id");
       return createTurnStream(turnId);
+    },
+    continue(reason?: string): string | undefined {
+      if (stopping) throw new Error("Agent is stopping");
+      const turnId = queue.wake(reason);
+      if (turnId !== undefined) void emit({ type: "turn.queued", turnId });
+      return turnId;
     },
     wait: (options) => queue.wait(options),
     interrupt: (reason) => queue.interrupt(reason),
