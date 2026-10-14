@@ -4,7 +4,17 @@ import { jsonSchema, simulateReadableStream, type TextStreamPart, type Tool, typ
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
-import { createAgent, createUserMessage, type Agent, type AgentEntry, type AgentEvent, type AgentMessage, type AgentPlugin } from "../src/index.js";
+import {
+  createAgent,
+  createEntry,
+  createMemoryStorage,
+  createUserMessage,
+  type Agent,
+  type AgentEntry,
+  type AgentEvent,
+  type AgentMessage,
+  type AgentPlugin,
+} from "../src/index.js";
 
 const USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
@@ -137,6 +147,34 @@ function callerTool(script: (host: ToolSet) => Promise<unknown>): Tool {
   );
 }
 
+describe("agent state restore", () => {
+  it("restores the latest state entry on init, before plugin init hooks run", async () => {
+    const observed: number[] = [];
+    const storage = createMemoryStorage<AgentEntry>([createEntry("state", { version: 2 }), createEntry("state", { version: 3 })]);
+    const observer: AgentPlugin = {
+      name: "state-observer",
+      init: (agent) => {
+        observed.push(agent.state.get().version);
+      },
+    };
+    const agent = createAgent({ model: scriptedModel([textStep("done")]), storage, plugins: [observer], initialState: { version: 1 } });
+
+    await agent.init();
+
+    expect(observed).toEqual([3]);
+    expect(agent.state.get().version).toBe(3);
+  });
+
+  it("falls back to initialState when storage holds no state entry", async () => {
+    const storage = createMemoryStorage<AgentEntry>([createEntry("message", createUserMessage("hello"))]);
+    const agent = createAgent({ model: scriptedModel([textStep("done")]), storage, initialState: { version: 7 } });
+
+    await agent.init();
+
+    expect(agent.state.get().version).toBe(7);
+  });
+});
+
 describe("agent tool loop", () => {
   it("ends the turn after a successful send step", async () => {
     const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("should not run")]);
@@ -184,6 +222,40 @@ describe("agent tool loop", () => {
     ]);
     expect(events.map((event) => event.type)).toContain("tool.failed");
     expect(events.map((event) => event.type)).toContain("turn.done");
+  });
+
+  it("reports a throwing beforeToolCall as a tool failure and keeps the step going", async () => {
+    const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("recovered")]);
+    const exploding: AgentPlugin = {
+      name: "exploding-verdict",
+      beforeToolCall() {
+        throw new Error("verdict exploded");
+      },
+    };
+    const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })), plugins: [exploding] });
+
+    const events = await runTurn(agent);
+
+    expect(events.map((event) => event.type)).toContain("tool.failed");
+    expect(events.at(-1)?.type).toBe("turn.done");
+    expect(model.doStreamCalls).toHaveLength(2);
+  });
+
+  it("reports a throwing afterToolCall as a tool failure and keeps the step going", async () => {
+    const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("recovered")]);
+    const exploding: AgentPlugin = {
+      name: "exploding-transform",
+      afterToolCall() {
+        throw new Error("transform exploded");
+      },
+    };
+    const agent = createAgent({ model, tools: sendTool(async (input) => ({ ok: true, id: "m-1", body: input.body })), plugins: [exploding] });
+
+    const events = await runTurn(agent);
+
+    expect(events.map((event) => event.type)).toContain("tool.failed");
+    expect(events.at(-1)?.type).toBe("turn.done");
+    expect(model.doStreamCalls).toHaveLength(2);
   });
 
   it("keeps a step's tool result next to its call when a record-only write lands mid-step", async () => {
@@ -589,6 +661,35 @@ describe("agent send batching", () => {
     expect(prompt).toContain("joins-alpha");
     expect(prompt).toContain("joins-bravo");
     expect(await storedRoles(agent)).toEqual(["user", "assistant", "tool", "user", "user", "assistant"]);
+  });
+});
+
+describe("agent interrupt", () => {
+  it("closes a discarded queued turn's stream with turn.aborted", async () => {
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) await gate.promise;
+        return { stream: simulateReadableStream({ chunks: textStep("done") }) };
+      },
+    });
+    const agent = createAgent({ model, maxSteps: 1 });
+
+    const first = agent.run(createUserMessage("first"));
+    const second = agent.run(createUserMessage("second"));
+    while (calls < 1) await tick();
+    await agent.interrupt();
+    gate.resolve();
+
+    const firstEvents: string[] = [];
+    for await (const event of first) firstEvents.push(event.type);
+    const secondEvents: string[] = [];
+    for await (const event of second) secondEvents.push(event.type);
+
+    expect(firstEvents.at(-1)).toBe("turn.aborted");
+    expect(secondEvents).toEqual(["turn.queued", "turn.aborted"]);
   });
 });
 

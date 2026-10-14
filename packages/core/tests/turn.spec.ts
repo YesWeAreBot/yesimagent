@@ -1,13 +1,39 @@
+import type { LanguageModelUsage } from "ai";
 import { describe, expect, it } from "vitest";
 
 import { createAssistantMessage, createUserMessage } from "../src/message.js";
 import { AgentQueue, type TurnResult } from "../src/turn.js";
 
+/** Runs one turn on a fresh queue and hands back its result, for usage assertions. */
+async function runUsageTurn(usageFor: (stepNumber: number) => Partial<LanguageModelUsage> | undefined): Promise<TurnResult | undefined> {
+  let result: TurnResult | undefined;
+  const queue = new AgentQueue({
+    maxSteps: 2,
+    async runStep(_request, stepNumber) {
+      return {
+        messages: [createAssistantMessage(`step-${stepNumber}`)],
+        usage: usageFor(stepNumber),
+        finishReason: "tool-calls",
+        continue: stepNumber === 0,
+      };
+    },
+    async emit() {},
+    async flushMessages() {},
+    onTurnFinish(value) {
+      result = value;
+    },
+  });
+  queue.enqueue([createUserMessage("hello")]);
+  await queue.wait();
+  return result;
+}
+
 describe("AgentQueue", () => {
-  it("runs one model step at a time and reports the last step's usage", async () => {
+  it("runs one model step at a time and reports the turn's total usage", async () => {
     const steps: number[] = [];
     const events: string[] = [];
     let result: TurnResult | undefined;
+    let doneUsage: Partial<LanguageModelUsage> | undefined;
     const queue = new AgentQueue({
       maxSteps: 3,
       async runStep(_request, stepNumber) {
@@ -21,6 +47,7 @@ describe("AgentQueue", () => {
       },
       async emit(event) {
         events.push(event.type);
+        if (event.type === "turn.done") doneUsage = event.totalUsage;
       },
       async flushMessages() {},
       onTurnFinish(value) {
@@ -36,9 +63,18 @@ describe("AgentQueue", () => {
     expect(result).toMatchObject({
       turnId,
       status: "done",
-      usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
+      totalUsage: { inputTokens: 5, outputTokens: 7, totalTokens: 12 },
     });
+    expect(doneUsage).toMatchObject({ inputTokens: 5, outputTokens: 7, totalTokens: 12 });
     expect(result?.messages).toHaveLength(3);
+  });
+
+  it("skips steps that report no usage, and omits totalUsage when none does", async () => {
+    const partial = await runUsageTurn((stepNumber) => (stepNumber === 0 ? undefined : { inputTokens: 4, outputTokens: 5, totalTokens: 9 }));
+    expect(partial?.totalUsage).toMatchObject({ inputTokens: 4, outputTokens: 5, totalTokens: 9 });
+
+    const none = await runUsageTurn(() => undefined);
+    expect(none?.totalUsage).toBeUndefined();
   });
 
   it("persists a joined message at the step boundary, not during the step", async () => {

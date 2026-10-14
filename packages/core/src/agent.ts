@@ -18,6 +18,7 @@ import { createAgentHooks, orderPlugins, type AgentPlugin, type StepOptions } fr
 import { AgentStateManager, type AgentState } from "./state.js";
 import { createMemoryStorage, type AgentStorage } from "./storage.js";
 import { runTool, type ToolCallRuntime } from "./tools.js";
+import { TurnEvents, hasTurnId, isTerminalEvent } from "./turn-events.js";
 import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type StepFinishDecision, type TurnRequest, type TurnStepResult } from "./turn.js";
 
 const DEFAULT_MAX_STEPS = 20;
@@ -53,9 +54,10 @@ export interface AgentConfig {
 }
 
 /**
- * The caller table, loosened the same way `toolsContext` is: a bare `ToolSet` declares no caller tools,
- * so the SDK's own parameter would collapse to the direct-call marker alone. Hosts build the set
- * dynamically and name their caller tools as plain strings; the SDK still validates the table itself.
+ * The caller table, loosened the same way `toolsContext` is: the SDK's own `Experimental_ToolCallers<TOOLS>`
+ * is keyed by the declared tool set and admits only its caller-capable names, so a bare `ToolSet` would
+ * collapse its values to the direct-call marker alone. Hosts build the set dynamically and name their
+ * caller tools as plain strings; the SDK still validates the table itself.
  */
 export type ToolCallers = Record<string, readonly string[]>;
 
@@ -122,8 +124,7 @@ export function createAgent(config: AgentConfig): Agent {
   const hooks = createAgentHooks(plugins);
   const maxSteps = Math.max(1, config.maxSteps ?? DEFAULT_MAX_STEPS);
   const submittedEntries = new WeakMap<object, AgentEntry<"message">>();
-  const turnBuffers = new Map<string, AgentEvent[]>();
-  const turnListeners = new Map<string, Set<(event: AgentEvent) => void>>();
+  const turnEvents = new TurnEvents();
   const turnRuntimeContexts = new Map<string, Record<string, unknown>>();
   const turnToolContexts = new Map<string, Record<string, unknown>>();
 
@@ -139,12 +140,7 @@ export function createAgent(config: AgentConfig): Agent {
   let agent!: Agent;
 
   const emit = async (event: AgentEvent): Promise<void> => {
-    if (hasTurnId(event)) {
-      const buffered = turnBuffers.get(event.turnId) ?? [];
-      buffered.push(event);
-      turnBuffers.set(event.turnId, buffered);
-      for (const listener of turnListeners.get(event.turnId) ?? []) listener(event);
-    }
+    turnEvents.push(event);
 
     if (event.type === "turn.start" || event.type === "turn.done" || event.type === "turn.failed" || event.type === "turn.aborted") {
       await storage.append(createEntry("event", event, hasTurnId(event) ? { turnId: event.turnId } : undefined));
@@ -210,8 +206,8 @@ export function createAgent(config: AgentConfig): Agent {
       // A loose `ToolSet` types as declaring no tool context, so the SDK parameter is `never`. The map is
       // still read per tool at runtime and each entry is validated against the tool's own `contextSchema`.
       toolsContext: options.toolsContext as never,
-      // Same reason as the cast above: a loose `ToolSet` types as declaring no caller tool, so the SDK
-      // parameter would admit the direct-call marker only. The SDK validates every table itself.
+      // Same reason as the cast above: a loose `ToolSet` types as declaring no caller tool, so
+      // `Experimental_ToolCallers` would admit the direct-call marker only. The SDK validates every table itself.
       experimental_toolCallers: config.toolCallers as never,
       runtimeContext: options.runtimeContext,
       ...(options.activeTools === undefined ? {} : { activeTools: options.activeTools }),
@@ -387,6 +383,10 @@ export function createAgent(config: AgentConfig): Agent {
     initializing = (async () => {
       const initializedPlugins: AgentPlugin[] = [];
       try {
+        // The last state entry is the newest snapshot of `agent.state`; without one, the manager
+        // keeps the `initialState` it was constructed with.
+        const persistedState = (await storage.read()).findLast((entry): entry is AgentEntry<"state"> => entry.type === "state");
+        if (persistedState) state.restore(persistedState.data);
         for (const plugin of plugins) {
           await plugin.init?.(agent);
           initializedPlugins.push(plugin);
@@ -404,7 +404,7 @@ export function createAgent(config: AgentConfig): Agent {
   };
 
   const createTurnStream = (turnId: string): AsyncIterable<AgentEvent> => {
-    const pending = [...(turnBuffers.get(turnId) ?? [])];
+    const pending = turnEvents.replay(turnId);
     let closed = pending.some(isTerminalEvent);
     let resume: (() => void) | undefined;
     const push = (event: AgentEvent) => {
@@ -414,14 +414,11 @@ export function createAgent(config: AgentConfig): Agent {
       resume = undefined;
       notify?.();
     };
-    const listeners = turnListeners.get(turnId) ?? new Set<(event: AgentEvent) => void>();
-    listeners.add(push);
-    turnListeners.set(turnId, listeners);
+    const unsubscribe = turnEvents.subscribe(turnId, push);
 
     const cleanup = () => {
-      listeners.delete(push);
-      if (listeners.size === 0) turnListeners.delete(turnId);
-      turnBuffers.delete(turnId);
+      unsubscribe();
+      turnEvents.drop(turnId);
       closed = true;
       const notify = resume;
       resume = undefined;
@@ -546,14 +543,6 @@ function toModelMessage(message: Exclude<AgentMessage, { role: "custom" }>): Mod
 
 function isMessageEntry(entry: AgentEntry): entry is AgentEntry<"message"> {
   return entry.type === "message";
-}
-
-function hasTurnId(event: AgentEvent): event is AgentEvent & { turnId: string } {
-  return "turnId" in event && typeof event.turnId === "string";
-}
-
-function isTerminalEvent(event: AgentEvent): boolean {
-  return event.type === "turn.done" || event.type === "turn.failed" || event.type === "turn.aborted";
 }
 
 function throwIfAborted(signal: AbortSignal): void {

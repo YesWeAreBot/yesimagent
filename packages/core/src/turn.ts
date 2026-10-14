@@ -64,7 +64,8 @@ export interface TurnResult {
   status: Exclude<TurnStatus, "queued" | "running">;
   messages: AgentMessage[];
   error?: TurnError;
-  usage?: Partial<LanguageModelUsage>;
+  /** The turn's usage, summed across its steps; per-step numbers stay on the `turn.step` events. */
+  totalUsage?: Partial<LanguageModelUsage>;
 }
 
 export interface AgentWaitOptions {
@@ -84,6 +85,8 @@ export class AgentQueue {
   private active: QueuedTurn | undefined;
   private activeDone: Promise<void> | undefined;
   private pumping = false;
+  /** Set while `interrupt` tears the queue down: the pump must not start the next turn mid-discard. */
+  private interrupting = false;
   /** Reasons of a `continue` requested while turns were running; materialized once the queue drains. */
   private pendingWake: string[] | undefined;
 
@@ -160,22 +163,38 @@ export class AgentQueue {
 
   async interrupt(reason?: unknown): Promise<void> {
     this.pendingWake = undefined;
-    if (this.active) {
-      this.active.controller.abort(reason);
-      await this.activeDone?.catch(() => undefined);
-    }
+    this.interrupting = true;
+    try {
+      if (this.active) {
+        this.active.controller.abort(reason);
+        await this.activeDone?.catch(() => undefined);
+      }
 
-    for (const turn of this.queue.splice(0)) turn.controller.abort(reason);
-    // A wake materialized while aborting above may already be running; discard it too.
-    if (this.active?.wake) {
-      this.active.controller.abort(reason);
-      await this.activeDone?.catch(() => undefined);
+      for (const turn of this.queue.splice(0)) {
+        turn.controller.abort(reason);
+        // A queued turn already announced itself with `turn.queued`: it needs a terminal too, or its
+        // stream (and its buffered events) would wait forever.
+        await this.options.emit({
+          type: "turn.aborted",
+          turnId: turn.request.turnId,
+          ...(reason === undefined ? {} : { reason: reason instanceof Error ? reason.message : String(reason) }),
+        });
+      }
+      // A wake materialized while aborting above may already be running; discard it too.
+      if (this.active?.wake) {
+        this.active.controller.abort(reason);
+        await this.activeDone?.catch(() => undefined);
+      }
+      this.notifyIdleWaiters();
+    } finally {
+      this.interrupting = false;
+      // Anything that raced into the queue while interrupting (a `send`) starts now.
+      void this.pump();
     }
-    this.notifyIdleWaiters();
   }
 
   private async pump(): Promise<void> {
-    if (this.active || this.pumping) return;
+    if (this.active || this.pumping || this.interrupting) return;
 
     const next = this.queue.shift();
     if (!next) {
@@ -211,7 +230,7 @@ export class AgentQueue {
   private async runTurn(turn: QueuedTurn): Promise<void> {
     const { request } = turn;
     const allMessages = [...request.messages];
-    let usage: Partial<LanguageModelUsage> | undefined;
+    let totalUsage: Partial<LanguageModelUsage> | undefined;
     let status: TurnResult["status"] = "done";
     let turnError: TurnError | undefined;
     const flushJoined = async (): Promise<void> => {
@@ -245,10 +264,11 @@ export class AgentQueue {
         // Joined messages land after the complete step output and are visible to the next step.
         await flushJoined();
 
-        // The last step's usage passes through: every step re-sends the same growing prefix, so summing
-        // `inputTokens` across steps would count the context once per step. Per-step numbers stay visible
-        // in the `turn.step` events.
-        usage = result.usage;
+        // The turn's total sums across steps: every step is a call of its own, prefix included.
+        // Per-step numbers stay visible in the `turn.step` events.
+        if (result.usage !== undefined) {
+          totalUsage = totalUsage === undefined ? result.usage : addUsage(totalUsage, result.usage);
+        }
         await this.options.emit({ type: "turn.step", turnId: request.turnId, stepNumber, usage: result.usage, finishReason: result.finishReason });
 
         const decision = await this.options.onStepFinish?.({ turnId: request.turnId, stepNumber, result });
@@ -262,7 +282,7 @@ export class AgentQueue {
       request.seal();
       throwIfAborted(request.signal);
       if (request.signal.aborted) status = "aborted";
-      await this.options.emit({ type: "turn.done", turnId: request.turnId });
+      await this.options.emit({ type: "turn.done", turnId: request.turnId, ...(totalUsage === undefined ? {} : { totalUsage }) });
     } catch (error) {
       status = isAbortError(error) || request.signal.aborted ? "aborted" : "failed";
       turnError = serializeError(error);
@@ -285,7 +305,7 @@ export class AgentQueue {
       turnId: request.turnId,
       status,
       messages: allMessages,
-      ...(usage === undefined ? {} : { usage }),
+      ...(totalUsage === undefined ? {} : { totalUsage }),
       ...(turnError === undefined || status === "done" ? {} : { error: turnError }),
     };
     await this.options.onTurnFinish?.(result);
@@ -364,4 +384,27 @@ function serializeError(error: unknown): TurnError {
     };
   }
   return { name: "Error", message: String(error), ...(error instanceof Error && error.stack ? { stack: error.stack } : {}) };
+}
+
+/** Adds two step usages field by field into a turn total; absent counts stay absent, and `raw`
+ *  (per-call provider data) stays out of the sum. */
+function addUsage(left: Partial<LanguageModelUsage>, right: Partial<LanguageModelUsage>): Partial<LanguageModelUsage> {
+  return {
+    inputTokens: addTokenCounts(left.inputTokens, right.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: addTokenCounts(left.inputTokenDetails?.noCacheTokens, right.inputTokenDetails?.noCacheTokens),
+      cacheReadTokens: addTokenCounts(left.inputTokenDetails?.cacheReadTokens, right.inputTokenDetails?.cacheReadTokens),
+      cacheWriteTokens: addTokenCounts(left.inputTokenDetails?.cacheWriteTokens, right.inputTokenDetails?.cacheWriteTokens),
+    },
+    outputTokens: addTokenCounts(left.outputTokens, right.outputTokens),
+    outputTokenDetails: {
+      textTokens: addTokenCounts(left.outputTokenDetails?.textTokens, right.outputTokenDetails?.textTokens),
+      reasoningTokens: addTokenCounts(left.outputTokenDetails?.reasoningTokens, right.outputTokenDetails?.reasoningTokens),
+    },
+    totalTokens: addTokenCounts(left.totalTokens, right.totalTokens),
+  };
+}
+
+function addTokenCounts(left: number | undefined, right: number | undefined): number | undefined {
+  return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
 }

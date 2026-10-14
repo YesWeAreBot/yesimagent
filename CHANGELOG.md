@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+- **core**: `TurnResult.usage` (the last step's numbers) is replaced by `TurnResult.totalUsage` — the turn's sum across its steps; the `turn.done` event carries the same `totalUsage`, and per-step numbers stay on `turn.step`
+- **core**: the unused `parentId` field is gone from `AgentEntry` and `CreateEntryOptions`
+
+### Fixed
+- **core**: state is restored from the latest persisted `state` entry on `init()`, falling back to `initialState`
+- **core**: a turn that finishes without a stream drops its buffered events, so a `send`-driven agent no longer keeps every finished turn's events in memory
+- **core**: `interrupt()` discards every queued turn — the pump no longer starts the next one mid-teardown — and each discarded turn is closed with `turn.aborted`
+- **core**: a throwing `beforeToolCall` or `afterToolCall` still reports `tool.failed` before the error travels on
+- **gateway**: a rejected `reconfigure()` leaves the previous providers, model catalog and groups in place
 ## [0.0.8] - 2026-10-14
 
 ### Added

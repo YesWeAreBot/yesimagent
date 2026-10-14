@@ -51,6 +51,8 @@ export interface TurnStepEvent {
 export interface TurnDoneEvent {
   type: "turn.done";
   turnId: string;
+  /** The turn's usage, summed across its steps. */
+  totalUsage?: Partial<LanguageModelUsage>;
 }
 
 export interface TurnFailedEvent {

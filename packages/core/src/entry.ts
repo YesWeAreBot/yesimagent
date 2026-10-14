@@ -9,13 +9,12 @@ export interface AgentCustomEntry {
 }
 
 export type AgentEntry<T extends keyof AgentCustomEntry = keyof AgentCustomEntry> = {
-  [K in T]: { type: K; data: AgentCustomEntry[K]; id: string; timestamp: number; parentId?: string; turnId?: string };
+  [K in T]: { type: K; data: AgentCustomEntry[K]; id: string; timestamp: number; turnId?: string };
 }[T];
 
 export interface CreateEntryOptions {
   id?: string;
   timestamp?: number;
-  parentId?: string;
   turnId?: string;
 }
 
@@ -25,7 +24,6 @@ export function createEntry<T extends keyof AgentCustomEntry>(type: T, data: Age
     type,
     data,
     timestamp: options.timestamp ?? Date.now(),
-    ...(options.parentId === undefined ? {} : { parentId: options.parentId }),
     ...(options.turnId === undefined ? {} : { turnId: options.turnId }),
   };
 }

@@ -49,7 +49,15 @@ export async function runTool(
   const execute = tool.execute;
 
   const call = { toolCallId, toolName: name, args: input };
-  const decision = (await runtime.beforeToolCall?.({ type: "allow" }, call)) ?? { type: "allow" };
+  let decision: ToolDecision;
+  try {
+    decision = (await runtime.beforeToolCall?.({ type: "allow" }, call)) ?? { type: "allow" };
+  } catch (error) {
+    // A broken verdict is still a failed call: report it before the error travels on.
+    if (isTurnAborted(runtime, error)) throw error;
+    await runtime.emit({ type: "tool.failed", turnId: runtime.turnId, toolName: name, toolCallId, args: input, error: serializeError(error) });
+    throw error;
+  }
   if (decision.type === "block") {
     await runtime.emit({ type: "tool.blocked", turnId: runtime.turnId, toolName: name, toolCallId, reason: decision.reason });
     return { blocked: true, reason: decision.reason };
@@ -63,12 +71,19 @@ export async function runTool(
     const result = await raceAbort(Promise.resolve(execute.call(tool, nextInput, options)), runtime.signal);
     outcome = { toolCallId, toolName: name, args: nextInput, result, isError: false };
   } catch (error) {
-    // An aborted turn is not a tool error: it must keep travelling as an abort.
-    if (runtime.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+    if (isTurnAborted(runtime, error)) throw error;
     outcome = { toolCallId, toolName: name, args: nextInput, result: error, isError: true };
   }
 
-  const transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
+  let transformed: ToolResultInfo;
+  try {
+    transformed = (await runtime.afterToolCall?.(outcome)) ?? outcome;
+  } catch (error) {
+    // A broken transform is still a failed call: report it before the error travels on.
+    if (isTurnAborted(runtime, error)) throw error;
+    await runtime.emit({ type: "tool.failed", turnId: runtime.turnId, toolName: name, toolCallId, args: nextInput, error: serializeError(error) });
+    throw error;
+  }
   if (outcome.isError) {
     await runtime.emit({
       type: "tool.failed",
@@ -96,6 +111,11 @@ function serializeError(error: unknown): { name: string; message: string; cause?
     };
   }
   return { name: "Error", message: String(error) };
+}
+
+/** An aborted turn is not a tool error: abort reads keep travelling as aborts. */
+function isTurnAborted(runtime: ToolCallRuntime, error: unknown): boolean {
+  return runtime.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
 }
 
 function raceAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

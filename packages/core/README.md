@@ -53,7 +53,7 @@ interface AgentConfig {
   toolsContext?: Record<string, unknown>; // per-tool context, see Tools
   toolChoice?: ToolChoice<ToolSet>; // per step; a prepareStep may override it
   activeTools?: readonly string[]; // only these tools are available per step; omit for all of them
-  toolCallers?: Experimental_ToolCallers<ToolSet>; // which caller tools may invoke each tool
+  toolCallers?: ToolCallers; // which caller tools may invoke each tool
   settings?: LanguageModelCallOptions; // sampling and limits for every step
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
   plugins?: readonly AgentPlugin[]; // see Plugins
@@ -103,7 +103,7 @@ interface AgentEntry<T> {
 }
 ```
 
-Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `createJsonlStorage(filePath)`. Any host backend — a database, a key-value store — is an `AgentStorage` implementation away.
+Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `createJsonlStorage(filePath)`. Any host backend — a database, a key-value store — is an `AgentStorage` implementation away. History is read in full on every step (`transformEntries` / `transformMessages` are the only trim points), so a store that outgrows a single file wants that backend.
 
 ## Turns
 
@@ -113,14 +113,14 @@ An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceV
 
 Turn events:
 
-| Event          | Emitted when                                                  |
-| -------------- | ------------------------------------------------------------- |
-| `turn.queued`  | A message was deferred behind an active turn.                 |
-| `turn.start`   | The turn begins.                                              |
-| `turn.step`    | A step finished, with that step's `usage` and `finishReason`. |
-| `turn.done`    | The turn finished; the last step's `usage` included.          |
-| `turn.failed`  | The model threw; `error` is `{ name, message, cause? }`.      |
-| `turn.aborted` | The turn was interrupted.                                     |
+| Event          | Emitted when                                                                 |
+| -------------- | ---------------------------------------------------------------------------- |
+| `turn.queued`  | A message was deferred behind an active turn.                                |
+| `turn.start`   | The turn begins.                                                             |
+| `turn.step`    | A step finished, with that step's `usage` and `finishReason`.                |
+| `turn.done`    | The turn finished; carries the turn's `totalUsage`, summed across its steps. |
+| `turn.failed`  | The model threw; `error` is `{ name, message, cause? }`.                     |
+| `turn.aborted` | The turn was interrupted.                                                    |
 
 ## Tools
 
@@ -189,13 +189,13 @@ A `prepareStep` that returns a different object changes it for the rest of the t
 
 ### Caller tools
 
-A caller tool is a tool that calls other tools. The AI SDK's code mode is the built-in one: instead of calling each tool itself, the model writes a program, and that program reaches the host tools the SDK bound to it. `experimental_toolCallers` says who may call what:
+A caller tool is a tool that calls other tools. The AI SDK's code mode is the built-in one: instead of calling each tool itself, the model writes a program, and that program reaches the host tools the SDK bound to it. `toolCallers` says who may call what (the table rides into the SDK's `experimental_toolCallers`, which validates it at runtime):
 
 ```ts
 const agent = createAgent({
   model,
   tools: { code_mode: codeModeTool(), send: sendMessage, search: searchTool },
-  experimental_toolCallers: { search: ["code_mode"], send: ["code_mode", DIRECT_TOOL_CALL] },
+  toolCallers: { search: ["code_mode"], send: ["code_mode", DIRECT_TOOL_CALL] },
 });
 ```
 

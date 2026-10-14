@@ -25,6 +25,11 @@ export function createMemoryStorage<T extends AgentEntry = AgentEntry>(initialEn
   };
 }
 
+/**
+ * A JSONL file as the store: one entry per line, oldest first. Appends are serialized within one agent
+ * but not across processes, and every read parses the whole file — a file shared by several writers,
+ * or one that outgrows scanning, wants a host backend. A corrupt line fails the read with its number.
+ */
 export function createJsonlStorage(filePath: string): AgentStorage<AgentEntry> {
   return {
     async append(...entries) {
