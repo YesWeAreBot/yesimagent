@@ -2,7 +2,7 @@
 
 TypeScript packages for building agents on the [AI SDK](https://ai-sdk.dev): a runtime kernel, and an AI SDK model registry.
 
-> Work in progress. The packages are versioned `0.0.1` and the interfaces may still change.
+> Work in progress. The packages are versioned `0.x` and the interfaces may still change.
 
 ## Packages
 
