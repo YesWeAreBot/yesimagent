@@ -262,6 +262,39 @@ describe("gateway reconfigure", () => {
         .map((candidate) => candidate.id),
     ).toEqual(["mock:slow"]);
   });
+
+  it("keeps the previous picture when a new provider is rejected", () => {
+    const gateway = build(config());
+
+    expect(() => gateway.reconfigure({ providers: { bad: { api: "nope", apiKey: "sk" } } })).toThrow(/unknown api "nope"/);
+
+    expect(gateway.providers()).toEqual(["mock"]);
+    expect(gateway.models().map((model) => model.id)).toEqual(["mock:main", "mock:turbo", "mock:slow", "mock:vectors"]);
+    expect(gateway.languageModel("mock:main").modelId).toBe("main");
+    expect(
+      gateway
+        .group("fallbacks")
+        .candidates()
+        .map((candidate) => candidate.id),
+    ).toEqual(["mock:main", "mock:turbo", "mock:slow"]);
+  });
+
+  it("keeps the previous picture when a new group is rejected", () => {
+    const gateway = build(config());
+
+    expect(() => gateway.reconfigure({ providers: config().providers, groups: { broken: { models: ["mock:missing"] } } })).toThrow(
+      /does not declare "missing"/,
+    );
+
+    expect(gateway.groups()).toEqual(["fallbacks"]);
+    expect(gateway.models().map((model) => model.id)).toEqual(["mock:main", "mock:turbo", "mock:slow", "mock:vectors"]);
+    expect(
+      gateway
+        .group("fallbacks")
+        .candidates()
+        .map((candidate) => candidate.id),
+    ).toEqual(["mock:main", "mock:turbo", "mock:slow"]);
+  });
 });
 
 const call = (prompt = "hi"): Pick<LanguageModelV4CallOptions, "prompt"> => ({

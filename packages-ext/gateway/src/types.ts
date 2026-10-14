@@ -63,7 +63,7 @@ export interface ProviderConfig {
   readonly apiKey: string;
   /** Extra request headers. Values may use `${NAME}` the same way `apiKey` does. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** Passed verbatim to the api factory, e.g. `{ authToken, fetch }`. Explicit fields above win over it. */
+  /** Passed verbatim to the api factory, e.g. `{ authToken }`. The explicit fields above and `GatewayOptions.fetch` win over it. */
   readonly settings?: Readonly<Record<string, unknown>>;
   /** Models this endpoint serves. */
   readonly models?: readonly ModelConfig[];
@@ -173,7 +173,7 @@ export interface GatewayOptions {
   readonly config: GatewayConfig;
   /** Additional apis, merged over the built-in dialects and keyed by the name `providers.<id>.api` uses. */
   readonly apis?: Readonly<Record<string, ApiFactory>>;
-  /** Transport for every provider, unless a provider overrides it through `settings`. */
+  /** Transport for every provider; the built-in dialects always use it, so `settings.fetch` is ignored. A per-provider transport registers a custom api. */
   readonly fetch?: typeof globalThis.fetch;
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
@@ -199,7 +199,7 @@ export interface Gateway {
   /** Names of every registered api. */
   readonly apis: readonly string[];
 
-  /** Replaces the configuration, rebuilding providers, the model catalog and the groups. */
+  /** Replaces the configuration, rebuilding providers, the model catalog and the groups. A rejected configuration leaves the previous one intact; breaker state and rotation start fresh. */
   reconfigure(config: GatewayConfig): void;
 
   /** Resolves a `${provider}:${modelId}` reference of the given modality. */

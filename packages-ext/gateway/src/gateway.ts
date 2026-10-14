@@ -76,11 +76,9 @@ export function createGateway(options: GatewayOptions): Gateway {
   const env = options.env ?? process.env;
 
   const apis = new Map<string, ApiFactory>(Object.entries(BUILTIN_APIS));
-  const providers = new Map<string, ProviderV4>();
-  const models = new Map<string, Model<ModelType>>();
-  const groups = new Map<string, ModelGroup>();
-
-  let config: GatewayConfig;
+  let providers = new Map<string, ProviderV4>();
+  let models = new Map<string, Model<ModelType>>();
+  let groups = new Map<string, ModelGroup>();
 
   const setupOf = (id: string, declaration: ProviderConfig): ProviderSetup => {
     const headers: Record<string, string> = {};
@@ -97,16 +95,23 @@ export function createGateway(options: GatewayOptions): Gateway {
     };
   };
 
-  /** Resolves a reference to the provider behind it and the declared model it names. */
-  const locate = <T extends ModelType>(type: T, reference: string): { provider: ProviderV4; model: Model<T>; level: ThinkLevel | undefined } => {
+  /** Resolves a reference against one provider map and model catalog — the live pair, or the one a
+   *  rebuild is staging. */
+  const locate = <T extends ModelType>(
+    inProviders: Map<string, ProviderV4>,
+    inModels: Map<string, Model<ModelType>>,
+    type: T,
+    reference: string,
+  ): { provider: ProviderV4; model: Model<T>; level: ThinkLevel | undefined } => {
     const parts = split(reference);
     if (!parts) throw new GatewayError(`"${reference}" is not a "provider:model" reference`);
 
     const { provider: providerId, modelId, level } = parts;
-    const provider = providers.get(providerId);
-    if (!provider) throw new GatewayError(`Unknown provider "${providerId}" (from "${reference}"); registered: ${[...providers.keys()].join(", ") || "none"}`);
+    const provider = inProviders.get(providerId);
+    if (!provider)
+      throw new GatewayError(`Unknown provider "${providerId}" (from "${reference}"); registered: ${[...inProviders.keys()].join(", ") || "none"}`);
 
-    const model = models.get(`${providerId}:${modelId}`) as Model<T>;
+    const model = inModels.get(`${providerId}:${modelId}`) as Model<T>;
     if (!model) throw new GatewayError(`Provider "${providerId}" does not declare "${modelId}"`);
     if (model.type !== type) throw new GatewayError(`Model "${model.id}" is declared as ${model.type}, not ${type}`);
     if (level !== undefined && type !== "language") {
@@ -116,8 +121,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     return { provider, model, level };
   };
 
-  const candidate = (reference: string): CandidateSource => {
-    const { provider, model, level } = locate("language", reference);
+  const candidate = (inProviders: Map<string, ProviderV4>, inModels: Map<string, Model<ModelType>>, reference: string): CandidateSource => {
+    const { provider, model, level } = locate(inProviders, inModels, "language", reference);
     if (level !== undefined) checkEfforts(model, level);
     const built = provider.languageModel(model.modelId);
     return {
@@ -129,12 +134,14 @@ export function createGateway(options: GatewayOptions): Gateway {
     };
   };
 
-  /** Rebuilds the providers the configuration declares, the catalog of their models, and the groups. */
-  const load = (): void => {
-    providers.clear();
-    models.clear();
+  /** Builds the providers the configuration declares, the catalog of their models, and the groups into
+   *  a staging picture, then swaps it in whole — a configuration that fails to build is rejected
+   *  without touching what the gateway already serves. */
+  const load = (next: GatewayConfig): void => {
+    const nextProviders = new Map<string, ProviderV4>();
+    const nextModels = new Map<string, Model<ModelType>>();
 
-    for (const [id, declaration] of Object.entries(config.providers ?? {})) {
+    for (const [id, declaration] of Object.entries(next.providers ?? {})) {
       if (typeof declaration.apiKey !== "string" || declaration.apiKey.length === 0) {
         throw new GatewayError(`providers.${id}: apiKey is required; use \${VAR} to read one from the environment`);
       }
@@ -149,18 +156,27 @@ export function createGateway(options: GatewayOptions): Gateway {
         throw new GatewayError(`providers.${id} (api: ${declaration.api}) could not be built: ${formatErrorCause(error)}`);
       }
 
-      providers.set(id, provider);
+      nextProviders.set(id, provider);
       for (const declared of declaration.models ?? []) {
         const { id: modelId, type = "language", ...metadata } = declared;
         const reference = `${id}:${modelId}`;
-        models.set(reference, { id: reference, provider: id, modelId, type, metadata });
+        nextModels.set(reference, { id: reference, provider: id, modelId, type, metadata });
       }
     }
 
-    groups.clear();
-    for (const [name, group] of Object.entries(config.groups ?? {})) {
-      groups.set(name, new ModelGroup(name, group.strategy ?? "failover", group.models, group.circuitBreaker, candidate));
+    // Groups resolve their members against the staged picture, so a typo fails the rebuild before
+    // anything reaches the live maps.
+    const nextGroups = new Map<string, ModelGroup>();
+    for (const [name, group] of Object.entries(next.groups ?? {})) {
+      nextGroups.set(
+        name,
+        new ModelGroup(name, group.strategy ?? "failover", group.models, group.circuitBreaker, (reference) => candidate(nextProviders, nextModels, reference)),
+      );
     }
+
+    providers = nextProviders;
+    models = nextModels;
+    groups = nextGroups;
   };
 
   const gateway: Gateway = {
@@ -179,50 +195,49 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
 
     reconfigure(next: GatewayConfig) {
-      config = next;
-      load();
+      load(next);
     },
 
     languageModel(name) {
-      const { provider, model, level } = locate("language", name);
+      const { provider, model, level } = locate(providers, models, "language", name);
       if (level !== undefined) checkEfforts(model, level);
       const built = provider.languageModel(model.modelId);
       return level === undefined ? built : withThinkLevel(built, level);
     },
 
     embeddingModel(name) {
-      const { provider, model } = locate("embedding", name);
+      const { provider, model } = locate(providers, models, "embedding", name);
       return provider.embeddingModel(model.modelId);
     },
 
     imageModel(name) {
-      const { provider, model } = locate("image", name);
+      const { provider, model } = locate(providers, models, "image", name);
       return provider.imageModel(model.modelId);
     },
 
     speechModel(name) {
-      const { provider, model } = locate("speech", name);
+      const { provider, model } = locate(providers, models, "speech", name);
       const factory = provider.speechModel;
       if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no speechModel`);
       return factory(model.modelId);
     },
 
     transcriptionModel(name) {
-      const { provider, model } = locate("transcription", name);
+      const { provider, model } = locate(providers, models, "transcription", name);
       const factory = provider.transcriptionModel;
       if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no transcriptionModel`);
       return factory(model.modelId);
     },
 
     rerankingModel(name) {
-      const { provider, model } = locate("reranking", name);
+      const { provider, model } = locate(providers, models, "reranking", name);
       const factory = provider.rerankingModel;
       if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no rerankingModel`);
       return factory(model.modelId);
     },
 
     decisionModel(name) {
-      const { provider, model } = locate("decision", name);
+      const { provider, model } = locate(providers, models, "decision", name);
       const factory = (provider as TypeSafeAiProvider).decisionModel;
       if (!factory) throw new GatewayError(`Provider "${model.provider}" serves no decisionModel`);
       return factory(model.modelId);
@@ -252,9 +267,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
   };
 
-  config = options.config;
   for (const [name, factory] of Object.entries(options.apis ?? {})) apis.set(name, factory);
-  load();
+  load(options.config);
 
   return gateway;
 }

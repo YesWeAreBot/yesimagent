@@ -118,7 +118,7 @@ groups:
 
 ## Apis
 
-The `api` key selects the factory that builds the provider. Four are built in (`builtinApis` is exported, so a host can inspect or spread it):
+The `api` key selects the factory that builds the provider. Five are built in (`BUILTIN_APIS` is exported, so a host can inspect or spread it):
 
 | api                    | Factory                     | Wire                                                                             |
 | ---------------------- | --------------------------- | -------------------------------------------------------------------------------- |
@@ -126,6 +126,7 @@ The `api` key selects the factory that builds the provider. Four are built in (`
 | `openai-responses`     | `@ai-sdk/openai`            | OpenAI Responses API                                                             |
 | `anthropic-messages`   | `@ai-sdk/anthropic`         | Anthropic Messages                                                               |
 | `google-generative-ai` | `@ai-sdk/google`            | Gemini                                                                           |
+| `typesafe-ai`          | `@ai-sdk/typesafe-ai`       | TypeSafe System One; decision models only                                        |
 
 `settings` is spread straight into the AI SDK factory, so anything the factory accepts can be passed — `authToken` for Anthropic enterprise relays, `includeUsage` for compatible endpoints, and so on. Explicit fields (`baseUrl`, `apiKey`, `headers`, the gateway's `fetch`) always win over `settings`.
 
@@ -163,6 +164,7 @@ interface Gateway {
   speechModel(name: string): SpeechModelV4;
   transcriptionModel(name: string): TranscriptionModelV4;
   rerankingModel(name: string): RerankingModelV4;
+  decisionModel(name: string): DecisionModelV4;
   group(name: string): Group;
   groups(): readonly string[];
 
