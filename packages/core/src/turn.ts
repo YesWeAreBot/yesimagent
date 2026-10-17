@@ -87,7 +87,7 @@ export class AgentQueue {
   private pumping = false;
   /** Set while `interrupt` tears the queue down: the pump must not start the next turn mid-discard. */
   private interrupting = false;
-  /** Reasons of a `continue` requested while turns were running; materialized once the queue drains. */
+  /** Prompts of a `continue` requested while turns were running; an empty array still means a wake is pending. Materialized once the queue drains. */
   private pendingWake: string[] | undefined;
 
   constructor(private readonly options: TurnQueueOptions) {}
@@ -125,21 +125,23 @@ export class AgentQueue {
   }
 
   /**
-   * Requests another turn without new input. Idle, it enqueues one whose opening message is a
-   * synthesized `Continue.` (reason appended when given) and returns its turn id; while turns are
-   * running or a wake is pending, the request merges into the single pending slot and returns
-   * `undefined` — the wake still fires once the queue drains, even after a terminal last step.
+   * The queue side of `agent.continue`: requests another turn. A prompt, when given, is appended as
+   * the turn's opening user message; without one the turn opens on the stored history alone. Idle, it
+   * enqueues that turn and returns its turn id; while turns are running or a wake is pending, the
+   * request merges into the single pending slot and returns `undefined` — the wake still fires once
+   * the queue drains, even after a terminal last step.
    */
-  wake(reason?: string): string | undefined {
+  continue(prompt?: string): string | undefined {
+    const prompts = prompt === undefined ? [] : [prompt];
     if (this.pendingWake) {
-      if (reason) this.pendingWake.push(reason);
+      this.pendingWake.push(...prompts);
       return undefined;
     }
     if (this.active || this.queue.length > 0) {
-      this.pendingWake = reason ? [reason] : [];
+      this.pendingWake = prompts;
       return undefined;
     }
-    const turn = createQueuedTurn([continueMessage(reason ? [reason] : [])], true);
+    const turn = createQueuedTurn(wakeMessages(prompts), true);
     this.queue.push(turn);
     void this.pump();
     return turn.request.turnId;
@@ -218,9 +220,9 @@ export class AgentQueue {
       settleActive();
       // Deferred wake fires once the queue drains, even after a terminal last step.
       if (this.pendingWake && this.queue.length === 0) {
-        const reasons = this.pendingWake;
+        const prompts = this.pendingWake;
         this.pendingWake = undefined;
-        this.queue.push(createQueuedTurn([continueMessage(reasons)], true));
+        this.queue.push(createQueuedTurn(wakeMessages(prompts), true));
       }
       this.notifyIdleWaiters();
       void this.pump();
@@ -356,10 +358,13 @@ function createQueuedTurn(messages: AgentMessage[], wake = false): QueuedTurn {
   return queued;
 }
 
-/** The opening message of a `continue` turn: a stable marker, with merged reasons appended. */
-function continueMessage(reasons: string[]): AgentMessage {
-  const trimmed = reasons.map((reason) => reason.trim()).filter((reason) => reason.length > 0);
-  return createUserMessage(trimmed.length === 0 ? "Continue." : `Continue. Reason: ${trimmed.join("; ")}`);
+/**
+ * The opening messages of a `continue` turn: the prompts as given, several of them merged into the one
+ * message a single pending wake always produced. Without a prompt there is none — the turn opens on the
+ * stored history alone, so no placeholder message is ever written.
+ */
+function wakeMessages(prompts: string[]): AgentMessage[] {
+  return prompts.length === 0 ? [] : [createUserMessage(prompts.join("; "))];
 }
 
 function throwIfAborted(signal: AbortSignal): void {

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking Changes
+- **core**: `agent.continue(reason?)` is now `continue(prompt?)` — triggering a turn and appending a message are separate: without a prompt the turn opens on stored history alone and no synthesized `Continue.` message is written; with one, the text is appended verbatim as the turn's opening user message
+- **core**: `AgentQueue.wake(reason?)` is now `AgentQueue.continue(prompt?)`, the queue side of the same call
 - **core**: `TurnResult.usage` (the last step's numbers) is replaced by `TurnResult.totalUsage` — the turn's sum across its steps; the `turn.done` event carries the same `totalUsage`, and per-step numbers stay on `turn.step`
 - **core**: the unused `parentId` field is gone from `AgentEntry` and `CreateEntryOptions`
 
