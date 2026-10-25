@@ -7,7 +7,7 @@ import {
   type ToolExecutionOptions,
   type ToolSet,
 } from "@ai-sdk/provider-utils";
-import { streamText, type LanguageModelCallOptions, type ToolChoice } from "ai";
+import { streamText, type LanguageModelCallOptions } from "ai";
 
 import { AgentChannel } from "./channel.js";
 import { createEntry, type AgentEntry } from "./entry.js";
@@ -18,8 +18,17 @@ import { createAgentHooks, orderPlugins, type AgentPlugin, type StepOptions } fr
 import { AgentStateManager, type AgentState } from "./state.js";
 import { createMemoryStorage, type AgentStorage } from "./storage.js";
 import { runTool, type ToolCallRuntime } from "./tools.js";
-import { TurnEvents, hasTurnId, isTerminalEvent } from "./turn-events.js";
-import { AgentQueue, type AgentWaitOptions, type BusyBehavior, type StepFinishDecision, type TurnRequest, type TurnStepResult } from "./turn.js";
+import {
+  AgentQueue,
+  TurnEvents,
+  hasTurnId,
+  isTerminalEvent,
+  type AgentWaitOptions,
+  type BusyBehavior,
+  type StepFinishDecision,
+  type TurnRequest,
+  type TurnStepResult,
+} from "./turn.js";
 
 const DEFAULT_MAX_STEPS = 20;
 
@@ -37,8 +46,6 @@ export interface AgentConfig {
   runtimeContext?: Record<string, unknown>;
   /** Tool context keyed by tool name; a `prepareStep` may change it for the rest of a turn. */
   toolsContext?: Record<string, unknown>;
-  toolChoice?: ToolChoice<ToolSet>;
-  activeTools?: readonly string[];
   /**
    * Which caller tools may invoke each tool, e.g. code mode: `{ query: ['code_mode'] }` lets a generated
    * program call `query` while hiding it from the model's own tool list. A tool with no entry keeps its
@@ -130,8 +137,8 @@ export function createAgent(config: AgentConfig): Agent {
   const turnToolContexts = new Map<string, Record<string, unknown>>();
 
   let model = config.model;
-  // The model-visible parts a turn assembles, each on its own: the request also carries `activeTools`,
-  // `toolChoice` and `settings`, which stay step-scoped (`config` + `prepareStep`) rather than assembled.
+  // The model-visible parts a turn assembles, each on its own: `settings` stays step-scoped
+  // (`config` + `prepareStep`) rather than assembled.
   let instructions = config.instructions;
   let tools: ToolSet = { ...config.tools };
   let initialized = false;
@@ -211,8 +218,6 @@ export function createAgent(config: AgentConfig): Agent {
       // `Experimental_ToolCallers` would admit the direct-call marker only. The SDK validates every table itself.
       experimental_toolCallers: config.toolCallers as never,
       runtimeContext: options.runtimeContext,
-      ...(options.activeTools === undefined ? {} : { activeTools: options.activeTools }),
-      ...(options.toolChoice === undefined ? {} : { toolChoice: options.toolChoice }),
       ...options.settings,
       abortSignal: request.signal,
       maxRetries: 0,
@@ -244,8 +249,6 @@ export function createAgent(config: AgentConfig): Agent {
       messages: collected,
       runtimeContext: turnRuntimeContexts.get(request.turnId) ?? config.runtimeContext ?? {},
       toolsContext: turnToolContexts.get(request.turnId) ?? config.toolsContext ?? {},
-      ...(config.toolChoice === undefined ? {} : { toolChoice: config.toolChoice }),
-      ...(config.activeTools === undefined ? {} : { activeTools: config.activeTools }),
       ...(config.settings === undefined ? {} : { settings: config.settings }),
     };
     const prepared = hooks.prepareStep ? await hooks.prepareStep(step) : step;

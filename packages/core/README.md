@@ -51,8 +51,6 @@ interface AgentConfig {
   tools?: ToolSet; // see Tools
   runtimeContext?: Record<string, unknown>; // per-turn host state, see Tools
   toolsContext?: Record<string, unknown>; // per-tool context, see Tools
-  toolChoice?: ToolChoice<ToolSet>; // per step; a prepareStep may override it
-  activeTools?: readonly string[]; // only these tools are available per step; omit for all of them
   toolCallers?: ToolCallers; // which caller tools may invoke each tool
   settings?: LanguageModelCallOptions; // sampling and limits for every step
   storage?: AgentStorage<AgentEntry>; // defaults to in-memory
@@ -108,8 +106,6 @@ Storage is `append` / `read` / `clear`. Built-in: `createMemoryStorage()` and `c
 ## Turns
 
 A turn is one pass through the queue: `turn.start` → steps → `turn.done` / `turn.failed` / `turn.aborted`. Each step calls the model once, executes the tool calls it produced, and continues (up to `maxSteps`) while tool calls remain. Whether a step ends the turn is a step-level decision: after the joined messages are persisted, `onStepFinish` runs and a returned `{ continue: false }` ends the turn even though tool calls were made. A step whose calls were all invalid keeps the turn going, so the model can repair its input.
-
-An enforced `toolChoice` that the model ignores fails the turn with `ToolChoiceViolationError`.
 
 Turn events:
 
@@ -255,7 +251,7 @@ The hook families:
 | `extendInstructions` / `extendTools`                  | Prompt assembly; each contributes a paragraph / a tool set. Run once per turn, before its first step. |
 | `onAppend` / `transformEntries` / `transformMessages` | History pipeline, chained in plugin order; each hook's return feeds the next plugin.                  |
 | `toModelMessages`                                     | Projects custom messages into model messages; first non-`undefined` wins.                             |
-| `prepareStep`                                         | Rewrites the step (messages, toolsContext, toolChoice, activeTools, settings) before the model call.  |
+| `prepareStep`                                         | Rewrites the step (messages, runtimeContext, toolsContext, settings) before the model call.           |
 | `beforeToolCall` / `afterToolCall`                    | Tool decisions and result transformation, including whether the result ends the turn.                 |
 | `onTurnFinish`                                        | Observer after a turn completes; must not change the result.                                          |
 

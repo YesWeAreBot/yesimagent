@@ -8,17 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking Changes
+- **core**: `AgentConfig.toolChoice` and `AgentConfig.activeTools` are gone, along with `StepOptions.toolChoice` and `StepOptions.activeTools` — the agent no longer forwards an enforced tool choice and no longer prunes a step's tools
+
+### Changed
+- **core**: `TurnEvents` and the turn event helpers moved from `turn-events.ts` into `turn.ts`; internal module layout only, public exports unchanged
+## [0.0.9] - 2026-10-17
+
+### Breaking Changes
+
 - **core**: `agent.continue(reason?)` is now `continue(prompt?)` — triggering a turn and appending a message are separate: without a prompt the turn opens on stored history alone and no synthesized `Continue.` message is written; with one, the text is appended verbatim as the turn's opening user message
 - **core**: `AgentQueue.wake(reason?)` is now `AgentQueue.continue(prompt?)`, the queue side of the same call
 - **core**: `TurnResult.usage` (the last step's numbers) is replaced by `TurnResult.totalUsage` — the turn's sum across its steps; the `turn.done` event carries the same `totalUsage`, and per-step numbers stay on `turn.step`
 - **core**: the unused `parentId` field is gone from `AgentEntry` and `CreateEntryOptions`
 
 ### Fixed
+
 - **core**: state is restored from the latest persisted `state` entry on `init()`, falling back to `initialState`
 - **core**: a turn that finishes without a stream drops its buffered events, so a `send`-driven agent no longer keeps every finished turn's events in memory
 - **core**: `interrupt()` discards every queued turn — the pump no longer starts the next one mid-teardown — and each discarded turn is closed with `turn.aborted`
 - **core**: a throwing `beforeToolCall` or `afterToolCall` still reports `tool.failed` before the error travels on
 - **gateway**: a rejected `reconfigure()` leaves the previous providers, model catalog and groups in place
+
 ## [0.0.8] - 2026-10-14
 
 ### Added
@@ -108,6 +118,7 @@ Initial release.
 - **build**: release workflow and bump configuration for automated versioning.
 
 [Unreleased]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.8...HEAD
+[0.0.9]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/YesWeAreBot/yesimagent/compare/v0.0.5...v0.0.6

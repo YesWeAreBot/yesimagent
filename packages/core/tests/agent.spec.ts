@@ -431,15 +431,6 @@ describe("agent tool loop", () => {
     expect(events.map((event) => event.type)).toContain("tool.failed");
   });
 
-  it("fails the turn when an enforced tool choice is ignored", async () => {
-    const model = scriptedModel([textStep("plain text")]);
-    const agent = createAgent({ model, toolChoice: "required" });
-
-    const events = await runTurn(agent);
-
-    expect(events.map((event) => event.type)).toContain("turn.failed");
-  });
-
   it("carries a prepareStep runtimeContext through the turn and restarts from the config on the next one", async () => {
     const model = scriptedModel([toolStep("send", { body: "hi" }), textStep("done"), textStep("next turn")]);
     const seen: unknown[] = [];

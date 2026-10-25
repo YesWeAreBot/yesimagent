@@ -1,4 +1,4 @@
-import type { LanguageModelCallOptions, ModelMessage, ToolChoice, ToolSet } from "ai";
+import type { LanguageModelCallOptions, ModelMessage, ToolSet } from "ai";
 
 import type { Agent } from "./agent.js";
 import type { AgentEntry } from "./entry.js";
@@ -28,8 +28,6 @@ export interface StepOptions extends TurnOptions {
    * A `prepareStep` that returns a different map changes it for the rest of the turn.
    */
   readonly toolsContext: Record<string, unknown>;
-  readonly toolChoice?: ToolChoice<ToolSet>;
-  readonly activeTools?: readonly string[];
   /** Model call settings for this step only; undefined fields fall back to the agent's. */
   readonly settings?: LanguageModelCallOptions;
 }
