@@ -111,8 +111,9 @@ groups:
     models: ["relay:main:low", "relay:turbo"] # levels mix freely with plain members
 ```
 
-- The trailing segment only counts when it exactly names a level, so model ids that contain colons (`ollama:qwen3:32b`) parse as before. The flip side: a model id that itself ends in a level name cannot be referenced.
+- The id is looked up as written first, so model ids that contain colons (`ollama:qwen3:32b`) and ids that themselves end in a level name (`relay:main:high`) resolve to the declared model. A trailing segment counts as a level only when no model is declared under the full id. The flip side: a declared `relay:main:high` cannot also be referenced as `relay:main` at level `high`.
 - A member pinned at a level is its own candidate and its own breaker entry — the same model at two levels are independent members.
+- `model()` follows the same rule: `gateway.model("relay:main:low")` returns the `relay:main` declaration.
 - When a declaration lists `thinking.efforts`, a pinned level outside that list fails at construction with the level named.
 - `max` sits outside the AI SDK spec's enum: OpenAI-family endpoints accept it, other providers emit an unsupported warning and ignore it.
 
@@ -176,7 +177,7 @@ interface Gateway {
 
 - `models("language")` narrows both halves of an entry: the result is `Model<"language">`, whose `metadata` is `ModelMetadata<"language">`. `models()` without an argument returns the whole catalog.
 - `languageModel("relay:main")` resolves and builds; a typo, a wrong modality, or an unlisted model throws a `GatewayError` naming the reference.
-- `model("relay:main")` is the pure catalog query: `undefined` when nothing is declared under that reference. Hosts that want pre-flight validation check it before resolving.
+- `model("relay:main")` is the pure catalog query: `undefined` when nothing is declared under that reference. A pinned level resolves to the declaration it applies to, so `model("relay:main:low")` and `model("relay:main")` name the same entry. Hosts that want pre-flight validation check it before resolving.
 - `provider("relay")` hands back the AI SDK provider for the parts the gateway doesn't model, such as `files()` and `skills()`.
 
 ## License

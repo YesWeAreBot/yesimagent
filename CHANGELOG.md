@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **core**: `TurnEvents` and the turn event helpers moved from `turn-events.ts` into `turn.ts`; internal module layout only, public exports unchanged
+
+### Fixed
+- **gateway**: a reference whose trailing segment is a think level no longer loses a declared model id that itself ends in a level name — the id is resolved against the catalog as written first, and only falls back to `provider:modelId` plus a pinned level when nothing is declared under the full id. `gateway.model()` follows the same rule instead of looking up the level-suffixed string.
+- **gateway**: a reference whose trailing segment is a think level no longer loses a declared model id that itself ends in a level name — the id is resolved against the catalog as written first, and only falls back to `provider:modelId` plus a pinned level when nothing is declared under the full id. `gateway.model()` follows the same rule instead of looking up the level-suffixed string
 ## [0.0.9] - 2026-10-17
 
 ### Breaking Changes

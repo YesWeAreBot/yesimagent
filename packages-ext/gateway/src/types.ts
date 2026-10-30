@@ -77,6 +77,10 @@ export type GroupStrategy = (typeof GROUP_STRATEGIES)[number];
  * Think levels a reference may pin as a trailing `:level` segment. `none` through `xhigh` mirror
  * the AI SDK's portable `reasoning` call option; `max` is an OpenAI-family extension the other
  * providers warn about and ignore.
+ *
+ * The segment only counts when no model is declared under the full id, so a declared id that ends
+ * in a level name (`main:high`) resolves to itself, and the same id cannot also be referenced at a
+ * level.
  */
 export const THINK_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -202,7 +206,7 @@ export interface Gateway {
   /** Replaces the configuration, rebuilding providers, the model catalog and the groups. A rejected configuration leaves the previous one intact; breaker state and rotation start fresh. */
   reconfigure(config: GatewayConfig): void;
 
-  /** Resolves a `${provider}:${modelId}` reference of the given modality. */
+  /** Resolves a `${provider}:${modelId}` reference of the given modality. A language reference may pin a think level as a trailing `:level`. */
   languageModel(name: string): LanguageModelV4;
   embeddingModel(name: string): EmbeddingModelV4;
   imageModel(name: string): ImageModelV4;
@@ -217,7 +221,7 @@ export interface Gateway {
 
   /** The models declared across every provider, optionally narrowed to one modality. */
   models<T extends ModelType = ModelType>(type?: T): ReadonlyArray<Model<T>>;
-  /** A single model by `${provider}:${modelId}`, or `undefined` when nothing is declared under it. */
+  /** A single model by `${provider}:${modelId}`, or `undefined` when nothing is declared under it. A language reference may pin a think level; it resolves to the model that level applies to. */
   model(name: string): Model | undefined;
   providers(): readonly string[];
 }

@@ -11,24 +11,34 @@ import { THINK_LEVELS } from "./types.js";
 
 const VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
-/** Splits a `provider:modelId[:thinkLevel]` reference, or `undefined` when it is not one. The level
- *  only counts when the trailing segment exactly names one, so model ids that contain colons
- *  (`qwen3:32b`) parse as before. */
-const split = (reference: string): { provider: string; modelId: string; level: ThinkLevel | undefined } | undefined => {
+/** Splits a `provider:modelId[:thinkLevel]` reference at its first colon, or `undefined` when it is
+ *  not one. The tail is left whole — a model id may contain colons (`qwen3:32b`), and only the
+ *  catalog can say whether the trailing segment is part of the id or a pinned level. */
+const split = (reference: string): { provider: string; id: string } | undefined => {
   const separator = reference.indexOf(":");
-  if (separator === -1) return undefined;
+  return separator === -1 ? undefined : { provider: reference.slice(0, separator), id: reference.slice(separator + 1) };
+};
 
-  let modelId = reference.slice(separator + 1);
-  let level: ThinkLevel | undefined;
-  const tail = modelId.lastIndexOf(":");
-  if (tail !== -1) {
-    const candidate = modelId.slice(tail + 1);
-    if ((THINK_LEVELS as readonly string[]).includes(candidate)) {
-      level = candidate as ThinkLevel;
-      modelId = modelId.slice(0, tail);
-    }
-  }
-  return { provider: reference.slice(0, separator), modelId, level };
+/** The declared model an id names, plus the think level the id pins, or `undefined` when nothing is
+ *  declared under it. The id is tried as written first: a trailing `:level` only counts when no
+ *  model is declared under the full id, so a model whose own id ends in a level name
+ *  (`main:high`) resolves to itself instead of being read as `main` at level `high`. */
+const lookup = (
+  inModels: Map<string, Model<ModelType>>,
+  provider: string,
+  id: string,
+): { model: Model<ModelType>; level: ThinkLevel | undefined } | undefined => {
+  const exact = inModels.get(`${provider}:${id}`);
+  if (exact) return { model: exact, level: undefined };
+
+  const tail = id.lastIndexOf(":");
+  if (tail === -1) return undefined;
+
+  const candidate = id.slice(tail + 1);
+  if (!(THINK_LEVELS as readonly string[]).includes(candidate)) return undefined;
+
+  const model = inModels.get(`${provider}:${id.slice(0, tail)}`);
+  return model === undefined ? undefined : { model, level: candidate as ThinkLevel };
 };
 
 /** Pins a think level onto every call the model sees, by way of the AI SDK's portable `reasoning`
@@ -106,19 +116,21 @@ export function createGateway(options: GatewayOptions): Gateway {
     const parts = split(reference);
     if (!parts) throw new GatewayError(`"${reference}" is not a "provider:model" reference`);
 
-    const { provider: providerId, modelId, level } = parts;
+    const { provider: providerId, id } = parts;
     const provider = inProviders.get(providerId);
     if (!provider)
       throw new GatewayError(`Unknown provider "${providerId}" (from "${reference}"); registered: ${[...inProviders.keys()].join(", ") || "none"}`);
 
-    const model = inModels.get(`${providerId}:${modelId}`) as Model<T>;
-    if (!model) throw new GatewayError(`Provider "${providerId}" does not declare "${modelId}"`);
+    const found = lookup(inModels, providerId, id);
+    if (!found) throw new GatewayError(`Provider "${providerId}" does not declare "${id}"`);
+
+    const model = found.model as Model<T>;
     if (model.type !== type) throw new GatewayError(`Model "${model.id}" is declared as ${model.type}, not ${type}`);
-    if (level !== undefined && type !== "language") {
-      throw new GatewayError(`Think level "${level}" only applies to language models (from "${reference}")`);
+    if (found.level !== undefined && type !== "language") {
+      throw new GatewayError(`Think level "${found.level}" only applies to language models (from "${reference}")`);
     }
 
-    return { provider, model, level };
+    return { provider, model, level: found.level };
   };
 
   const candidate = (inProviders: Map<string, ProviderV4>, inModels: Map<string, Model<ModelType>>, reference: string): CandidateSource => {
@@ -259,7 +271,11 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
 
     model(name) {
-      return models.get(name);
+      const parts = split(name);
+      if (!parts) return undefined;
+      const found = lookup(models, parts.provider, parts.id);
+      // A level applies to language models only, exactly as resolution treats it.
+      return found === undefined || (found.level !== undefined && found.model.type !== "language") ? undefined : found.model;
     },
 
     providers() {

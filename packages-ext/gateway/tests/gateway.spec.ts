@@ -347,6 +347,41 @@ describe("gateway think levels", () => {
     expect(() => gateway.languageModel("mock:main:highx")).toThrow(/does not declare "main:highx"/);
   });
 
+  it("resolves an id that itself ends in a level name to the declared model", async () => {
+    const mocked = mockProvider({ language: ["main:high"] });
+    const gateway = createGateway({
+      config: { providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "main:high" }] } } },
+      apis: { mock: () => mocked.provider },
+    });
+
+    const model = gateway.languageModel("mock:main:high");
+    expect(model.modelId).toBe("main:high");
+    await model.doGenerate(call());
+
+    expect(mocked.language["main:high"].doGenerateCalls[0].reasoning).toBeUndefined();
+  });
+
+  it("prefers the id as written when both it and its base model are declared", async () => {
+    const mocked = mockProvider({ language: ["main", "main:high"] });
+    const gateway = createGateway({
+      config: { providers: { mock: { api: "mock", apiKey: "sk", models: [{ id: "main" }, { id: "main:high" }] } } },
+      apis: { mock: () => mocked.provider },
+    });
+
+    expect(gateway.languageModel("mock:main:high")).toBe(mocked.language["main:high"]);
+    await gateway.languageModel("mock:main:low").doGenerate(call());
+    expect(mocked.language.main.doGenerateCalls[0].reasoning).toBe("low");
+  });
+
+  it("finds a level-pinned reference in the catalog", () => {
+    const gateway = build(config());
+
+    expect(gateway.model("mock:main")?.id).toBe("mock:main");
+    expect(gateway.model("mock:main:low")?.id).toBe("mock:main");
+    expect(gateway.model("mock:main:highx")).toBeUndefined();
+    expect(gateway.model("mock:vectors:high")).toBeUndefined();
+  });
+
   it("refuses a level on a non-language model", () => {
     const gateway = build(config());
 
